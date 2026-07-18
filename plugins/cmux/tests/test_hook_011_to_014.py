@@ -8,41 +8,60 @@ def test_hook_011_restart_every_tracked_delivery_accountable(tmp_path):
     Y-CMUX-011 — Restart: every tracked delivery is accountable, with ambiguity visible.
     """
     path = tmp_path / "j.sqlite"
-    j = InjectionJournal(path)
 
-    # Fixture: submit 5 sends
-    j.prepare(
-        delivery_id="d-1", binding_id="b", seat_id="s", marker="[ygr:d-1:n:s]", now=1.0
-    )
-    j.prepare(
-        delivery_id="d-2", binding_id="b", seat_id="s", marker="[ygr:d-2:n:s]", now=1.0
-    )
-    j.prepare(
-        delivery_id="d-3", binding_id="b", seat_id="s", marker="[ygr:d-3:n:s]", now=1.0
-    )
-    j.prepare(
-        delivery_id="d-4", binding_id="b", seat_id="s", marker="[ygr:d-4:n:s]", now=1.0
-    )
-    j.prepare(
-        delivery_id="d-5", binding_id="b", seat_id="s", marker="[ygr:d-5:n:s]", now=1.0
-    )
+    # 1. Pre-crash block (ensures handle closes safely even if an assertion fails before the crash)
+    with InjectionJournal(path) as j:
+        # Fixture: submit 5 sends
+        j.prepare(
+            delivery_id="d-1",
+            binding_id="b",
+            seat_id="s",
+            marker="[ygr:d-1:n:s]",
+            now=1.0,
+        )
+        j.prepare(
+            delivery_id="d-2",
+            binding_id="b",
+            seat_id="s",
+            marker="[ygr:d-2:n:s]",
+            now=1.0,
+        )
+        j.prepare(
+            delivery_id="d-3",
+            binding_id="b",
+            seat_id="s",
+            marker="[ygr:d-3:n:s]",
+            now=1.0,
+        )
+        j.prepare(
+            delivery_id="d-4",
+            binding_id="b",
+            seat_id="s",
+            marker="[ygr:d-4:n:s]",
+            now=1.0,
+        )
+        j.prepare(
+            delivery_id="d-5",
+            binding_id="b",
+            seat_id="s",
+            marker="[ygr:d-5:n:s]",
+            now=1.0,
+        )
 
-    # Progress states before crash
-    j.settle(delivery_id="d-2", state=JournalState.INJECTED, now=2.0)
+        # Progress states before crash
+        j.settle(delivery_id="d-2", state=JournalState.INJECTED, now=2.0)
 
-    # d-3: Must transition to INJECTED before ACKED (State machine enforcement from PR #16)
-    j.settle(delivery_id="d-3", state=JournalState.INJECTED, now=2.0)
-    j.settle(delivery_id="d-3", state=JournalState.ACKED, now=2.0)
+        # d-3: Must transition to INJECTED before ACKED (State machine enforcement from PR #16)
+        j.settle(delivery_id="d-3", state=JournalState.INJECTED, now=2.0)
+        j.settle(delivery_id="d-3", state=JournalState.ACKED, now=2.0)
 
-    j.settle(delivery_id="d-4", state=JournalState.AMBIGUOUS, now=2.0)
-    # d-1 and d-5 remain prepared (in crash window)
+        j.settle(delivery_id="d-4", state=JournalState.AMBIGUOUS, now=2.0)
+        # d-1 and d-5 remain prepared (in crash window)
 
-    # Crash!
-    j.close()
+    # At this point, `with` block exits, `j.close()` is automatically called. Crash simulated.
 
-    # Post-restart recovery
-    j2 = InjectionJournal(path)
-    try:
+    # 2. Post-restart recovery
+    with InjectionJournal(path) as j2:
         unsettled = j2.unsettled()
         assert len(unsettled) == 2
 
@@ -68,9 +87,6 @@ def test_hook_011_restart_every_tracked_delivery_accountable(tmp_path):
         assert j2.get("d-3").state == JournalState.ACKED
         assert j2.get("d-4").state == JournalState.AMBIGUOUS
         assert j2.get("d-5").state == JournalState.AMBIGUOUS
-
-    finally:
-        j2.close()
 
 
 @pytest.mark.skip(
