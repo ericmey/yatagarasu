@@ -102,7 +102,11 @@ def test_hook_012_turn_completed_never_answered():
 
 def test_hook_013_signed_marker_forgery_rejected():
     """
-    Y-CMUX-013: Signed marker validation; forged/expired/copied/stale rejected.
+    Y-CMUX-013: Signed marker validation — forged signature, tampered
+    delivery_id, and empty-key misconfiguration are all rejected.
+
+    Expiry and replay/stale detection are NOT covered here; they need a clock
+    and a seen-marker store. Do not read this test as proving them.
     """
     real_key = b"strict-signing-key"
     empty_key = b""
@@ -114,10 +118,11 @@ def test_hook_013_signed_marker_forgery_rejected():
     assert extract(real_key, marker.text) is not None
 
     # Fixture A - Forged Marker: tampered signature
-    forged_text = f"[ygr:{delivery_id}:{marker.nonce}:{'0' * 16}]"
+    forged_text = f"[ygr:{delivery_id}:{marker.nonce}:{'0' * len(marker.signature)}]"
     assert extract(real_key, forged_text) is None, "Forged marker must be rejected"
 
-    # Fixture C/D - Copied/Stale Marker
+    # Tampered delivery_id: the signature is bound to the id, so changing the
+    # id invalidates it. This is binding, not staleness.
     tampered_id = f"[ygr:wrong-id:{marker.nonce}:{marker.signature}]"
     assert extract(real_key, tampered_id) is None, (
         "Tampered delivery ID must fail signature"
