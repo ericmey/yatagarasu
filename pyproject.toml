@@ -1,0 +1,52 @@
+[project]
+name = "yatagarasu"
+version = "0.0.0"
+description = "A comms fabric for persistent AI agent sessions"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+# Each component is its own package root; the repo is a workspace, not one lib.
+packages = []
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["core", "plugins", "tests"]
+python_files = ["test_*.py"]
+# Fail on unraisable warnings rather than letting them scroll past: a test suite
+# that tolerates noise is how a real signal gets missed.
+filterwarnings = ["error"]
+addopts = "-ra --strict-markers --strict-config"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+src = ["core", "plugins"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",   # pycodestyle
+    "F",        # pyflakes
+    "I",        # import sorting
+    "B",        # bugbear
+    "UP",       # pyupgrade
+    "SIM",      # simplify
+    "RUF",      # ruff-specific
+]
+ignore = [
+    "E501",  # line length is handled by the formatter
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests may assert on privates and use fixtures that look unused.
+"**/tests/**" = ["B011"]

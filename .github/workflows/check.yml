@@ -1,0 +1,34 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# A PR that is superseded should stop burning runners, but never cancel main.
+concurrency:
+  group: check-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      # CI deliberately calls the Makefile rather than repeating its commands.
+      # Duplicating the list is how local-green and CI-green silently diverge.
+      - name: Install
+        run: make install
+
+      # Round 1 must be verifiable with no live external service. Anything that
+      # needs a real host or a real chat platform belongs behind a fixture, not
+      # in CI — a suite that can only pass on one machine proves nothing here.
+      - name: Check (lint, format, tests)
+        run: make check
