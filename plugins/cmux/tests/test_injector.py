@@ -208,3 +208,57 @@ def test_redact_reports_length_only():
     out = redact("super secret prompt text")
     assert "secret" not in out
     assert "len=24" in out
+
+
+# --- regression tests for the review findings on this module ---
+
+
+def test_bad_signing_key_returns_verdict_not_exception():
+    """The contract is a verdict, always. Minting rejects an empty key, and that
+    happens before any local effect — so it is a clean negative, not a raise."""
+    inj = Injector(
+        resolver=FakeResolver(["surface:1"]),
+        transport=FakeTransport(),
+        observer=FakeObserver([]),
+        signing_key=b"",
+    )
+    result = inj.deliver("peer", "d-20", "hello")
+
+    assert result.outcome is SubmitOutcome.NOT_SUBMITTED
+    assert result.may_requeue
+    assert "marker error" in result.detail
+
+
+def test_bad_delivery_id_returns_verdict_not_exception():
+    inj = build()
+    result = inj.deliver("peer", "not a valid token!", "hello")
+
+    assert result.outcome is SubmitOutcome.NOT_SUBMITTED
+    assert "marker error" in result.detail
+
+
+def test_nothing_is_injected_when_minting_fails():
+    """A mint failure must not touch the pane, or the 'clean negative' is a lie."""
+    transport = FakeTransport()
+    inj = Injector(
+        resolver=FakeResolver(["surface:1"]),
+        transport=transport,
+        observer=FakeObserver([]),
+        signing_key=b"",
+    )
+    inj.deliver("peer", "d-21", "hello")
+
+    assert transport.sent == []
+    assert transport.submitted == []
+
+
+def test_empty_key_never_authenticates_a_marker():
+    """An empty key makes every signature computable by anyone. Fail closed:
+    a misconfigured deployment must reject markers, not accept forgeries."""
+    real = mint(KEY, "d-22")
+    forged_sig = "0" * 16
+    forged = f"[ygr:d-22:{real.nonce}:{forged_sig}]"
+
+    assert extract(b"", real.text) is None
+    assert extract(b"", forged) is None
+    assert extract(None, real.text) is None

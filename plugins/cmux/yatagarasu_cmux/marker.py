@@ -85,7 +85,11 @@ def extract(key: bytes, haystack: str | None) -> Marker | None:
 
     The caller is expected to keep only the returned marker and drop ``haystack``.
     """
-    if not haystack:
+    # An empty key makes every signature computable by anyone, so a misconfigured
+    # deployment would accept forged markers rather than failing closed. Reject
+    # before comparing, and do it here rather than trusting callers: this function
+    # exists precisely to be safe on untrusted input.
+    if not key or not haystack:
         return None
 
     for match in _MARKER_RE.finditer(haystack):
