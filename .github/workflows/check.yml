@@ -22,20 +22,13 @@ jobs:
           python-version: "3.11"
           cache: pip
 
+      # CI deliberately calls the Makefile rather than repeating its commands.
+      # Duplicating the list is how local-green and CI-green silently diverge.
       - name: Install
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-          pip install -e core -e plugins/cmux -e plugins/agent-bridge -e plugins/discord
-
-      - name: Lint
-        run: ruff check .
-
-      - name: Format check
-        run: ruff format --check .
+        run: make install
 
       # Round 1 must be verifiable with no live external service. Anything that
       # needs a real host or a real chat platform belongs behind a fixture, not
       # in CI — a suite that can only pass on one machine proves nothing here.
-      - name: Tests
-        run: pytest
+      - name: Check (lint, format, tests)
+        run: make check
