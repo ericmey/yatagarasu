@@ -15,10 +15,13 @@ help:
 	@echo "test       pytest"
 	@echo "check      exactly what CI runs — run before opening a PR"
 
+# Always `python -m pip`, never bare `pip`: a bare pip resolves through PATH and
+# can belong to a different interpreter than the `python` being installed into,
+# which produces a build that looks installed and imports nothing.
 install:
 	python -m pip install --upgrade pip
-	pip install -e ".[dev]"
-	pip install $(foreach p,$(PKGS),-e $(p))
+	python -m pip install -e ".[dev]"
+	python -m pip install $(foreach p,$(PKGS),-e $(p))
 
 lint:
 	ruff check .
