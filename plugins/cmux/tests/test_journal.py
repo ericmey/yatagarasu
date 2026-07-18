@@ -101,7 +101,7 @@ def test_ambiguous_is_terminal_and_not_rewritable(journal):
         now=2.0,
         detail="marker unprovable on the bus",
     )
-    with pytest.raises(JournalError, match="already terminal"):
+    with pytest.raises(JournalError, match="illegal transition"):
         journal.settle(delivery_id="d-1", state=JournalState.ACKED, now=3.0)
 
 
@@ -121,7 +121,9 @@ def test_settling_an_unprepared_delivery_is_refused(journal):
 def test_terminal_rows_are_not_in_the_reconciliation_set(journal):
     prep(journal, "d-done")
     prep(journal, "d-stuck")
-    journal.settle(delivery_id="d-done", state=JournalState.ACKED, now=2.0)
+    # Must traverse the real lifecycle: prepared -> injected -> acked.
+    journal.settle(delivery_id="d-done", state=JournalState.INJECTED, now=2.0)
+    journal.settle(delivery_id="d-done", state=JournalState.ACKED, now=3.0)
 
     assert [r.delivery_id for r in journal.unsettled()] == ["d-stuck"]
 
@@ -137,8 +139,9 @@ def test_journal_stores_no_message_content(journal):
 def test_idempotent_settle_to_same_terminal_state_is_allowed(journal):
     """A retried ack must not explode — it is the same claim, not a new one."""
     prep(journal)
-    journal.settle(delivery_id="d-1", state=JournalState.ACKED, now=2.0)
-    row = journal.settle(delivery_id="d-1", state=JournalState.ACKED, now=3.0)
+    journal.settle(delivery_id="d-1", state=JournalState.INJECTED, now=2.0)
+    journal.settle(delivery_id="d-1", state=JournalState.ACKED, now=3.0)
+    row = journal.settle(delivery_id="d-1", state=JournalState.ACKED, now=4.0)
     assert row.state is JournalState.ACKED
 
 
@@ -174,3 +177,89 @@ def test_later_settle_may_add_evidence_but_not_silently_drop_it(journal):
     )
     assert row.source_events == ("surface.input_sent", "workspace.prompt.submitted")
     assert row.detail == "first"
+
+
+# --- regression tests for the review findings on this module ---
+
+
+def test_evidence_is_append_only_even_when_a_later_settle_supplies_a_subset(journal):
+    """The bug my first fix missed. Preserving evidence only when the later call
+    supplies NOTHING is not append-only — a settle carrying a subset would still
+    silently drop what an earlier one proved."""
+    prep(journal)
+    journal.settle(
+        delivery_id="d-1",
+        state=JournalState.INJECTED,
+        now=2.0,
+        source_events=("surface.input_sent", "workspace.prompt.submitted"),
+    )
+    row = journal.settle(
+        delivery_id="d-1",
+        state=JournalState.ACKED,
+        now=3.0,
+        source_events=("surface.input_sent",),  # subset
+    )
+    assert row.source_events == ("surface.input_sent", "workspace.prompt.submitted")
+
+
+def test_evidence_appends_new_events_without_duplicating(journal):
+    prep(journal)
+    journal.settle(
+        delivery_id="d-1",
+        state=JournalState.INJECTED,
+        now=2.0,
+        source_events=("surface.input_sent",),
+    )
+    row = journal.settle(
+        delivery_id="d-1",
+        state=JournalState.ACKED,
+        now=3.0,
+        source_events=("surface.input_sent", "workspace.prompt.submitted"),
+    )
+    assert row.source_events == ("surface.input_sent", "workspace.prompt.submitted")
+
+
+def test_injected_cannot_be_downgraded_to_ambiguous(journal):
+    """A proven injection must never become unproven — that would licence a
+    re-injection of a message the model already took."""
+    prep(journal)
+    journal.settle(delivery_id="d-1", state=JournalState.INJECTED, now=2.0)
+    with pytest.raises(JournalError, match="illegal transition"):
+        journal.settle(delivery_id="d-1", state=JournalState.AMBIGUOUS, now=3.0)
+
+
+def test_prepared_cannot_skip_straight_to_acked(journal):
+    """Acking without recording that the effect fired loses the only local
+    evidence that it did."""
+    prep(journal)
+    with pytest.raises(JournalError, match="illegal transition"):
+        journal.settle(delivery_id="d-1", state=JournalState.ACKED, now=2.0)
+
+
+def test_prepared_may_settle_to_ambiguous(journal):
+    """The crash-window path stays legal."""
+    prep(journal)
+    row = journal.settle(
+        delivery_id="d-1", state=JournalState.AMBIGUOUS, now=2.0, detail="unprovable"
+    )
+    assert row.state is JournalState.AMBIGUOUS
+
+
+def test_concurrent_prepare_raises_journal_error_not_a_driver_error(journal):
+    """The duplicate check is the INSERT itself. Reading first and inserting
+    second is a TOCTOU race that surfaces a raw driver exception instead of the
+    documented JournalError."""
+    prep(journal)
+    with pytest.raises(JournalError, match="already journaled"):
+        prep(journal)
+
+
+def test_default_path_is_not_under_the_system_temp_dir(monkeypatch):
+    """A durable journal in tmp does not survive the reboot it exists to survive."""
+    import tempfile as _tempfile
+
+    from yatagarasu_cmux.journal import default_path
+
+    monkeypatch.delenv("YATAGARASU_STATE_DIR", raising=False)
+    monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+    assert _tempfile.gettempdir() not in str(default_path())

@@ -23,7 +23,6 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -66,6 +65,18 @@ class JournalState(StrEnum):
 TERMINAL: frozenset[JournalState] = frozenset(
     {JournalState.ACKED, JournalState.AMBIGUOUS}
 )
+
+#: The lifecycle, enforced rather than merely documented. A comment describing a
+#: state machine that the code does not check is an invitation to violate it.
+#: Note what is deliberately absent: ``injected -> ambiguous`` would downgrade a
+#: proven injection to unproven, and ``prepared -> acked`` would skip the step
+#: that records the effect actually fired.
+LEGAL_TRANSITIONS: dict[JournalState, frozenset[JournalState]] = {
+    JournalState.PREPARED: frozenset({JournalState.INJECTED, JournalState.AMBIGUOUS}),
+    JournalState.INJECTED: frozenset({JournalState.ACKED}),
+    JournalState.ACKED: frozenset(),
+    JournalState.AMBIGUOUS: frozenset(),
+}
 
 
 class JournalError(RuntimeError):
@@ -141,26 +152,32 @@ class InjectionJournal:
         same delivery has skipped the duplicate check, and silently overwriting
         would erase the evidence that an effect may already have fired.
         """
-        existing = self.get(delivery_id)
-        if existing is not None:
+        # The uniqueness check is the INSERT itself. Reading first and inserting
+        # second is a time-of-check/time-of-use race: two concurrent prepares for
+        # the same delivery both see "absent" and one gets a raw IntegrityError
+        # from the driver instead of the documented JournalError. Let the primary
+        # key decide, inside the transaction, and translate the failure.
+        try:
+            with self._transaction():
+                self._db.execute(
+                    "INSERT INTO injection_journal"
+                    " (delivery_id, binding_id, seat_id, marker, state, prepared_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        delivery_id,
+                        binding_id,
+                        seat_id,
+                        marker,
+                        JournalState.PREPARED.value,
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            existing = self.get(delivery_id)
+            state = existing.state if existing else "unknown"
             raise JournalError(
-                f"delivery {delivery_id} already journaled in state {existing.state}"
-            )
-
-        with self._transaction():
-            self._db.execute(
-                "INSERT INTO injection_journal"
-                " (delivery_id, binding_id, seat_id, marker, state, prepared_at)"
-                " VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    delivery_id,
-                    binding_id,
-                    seat_id,
-                    marker,
-                    JournalState.PREPARED.value,
-                    now,
-                ),
-            )
+                f"delivery {delivery_id} already journaled in state {state}"
+            ) from exc
         row = self.get(delivery_id)
         assert row is not None
         return row
@@ -181,18 +198,20 @@ class InjectionJournal:
         row = self.get(delivery_id)
         if row is None:
             raise JournalError(f"delivery {delivery_id} was never prepared")
-        if row.is_terminal and row.state is not state:
+        if row.state is not state and state not in LEGAL_TRANSITIONS[row.state]:
             raise JournalError(
-                f"delivery {delivery_id} is already terminal in {row.state};"
-                f" refusing to rewrite as {state}"
+                f"illegal transition {row.state} -> {state} for delivery {delivery_id}"
             )
 
-        # Evidence is append-only in spirit: a later settle that supplies no
-        # source events must not erase the chain recorded by an earlier one.
-        # Acking an injection would otherwise destroy the very proof that the
-        # injection happened, which is the failure this whole module exists to
-        # prevent — just aimed at ourselves.
-        merged_events = tuple(source_events) or row.source_events
+        # Evidence is append-only, and now actually is. Replacing whenever new
+        # events are supplied means a later settle carrying a SUBSET — or a
+        # different ordering — silently drops what an earlier one proved. Append
+        # what is new, preserving first-seen order, and never remove.
+        merged_events = list(row.source_events)
+        for event in source_events:
+            if event not in merged_events:
+                merged_events.append(event)
+        merged_events = tuple(merged_events)
         merged_detail = detail or row.detail
 
         with self._transaction():
@@ -272,6 +291,16 @@ class InjectionJournal:
 
 
 def default_path() -> Path:
-    """Host-local journal location. Never shared between hosts."""
-    base = os.environ.get("YATAGARASU_STATE_DIR") or tempfile.gettempdir()
+    """Host-local journal location. Never shared between hosts.
+
+    Deliberately NOT the system temp directory: tmp is frequently tmpfs-backed or
+    periodically cleaned, so a journal living there would not survive the reboot
+    or power loss it exists to survive — a durability guarantee that evaporates
+    under exactly its own use case. Falls back to the XDG state directory.
+    """
+    base = (
+        os.environ.get("YATAGARASU_STATE_DIR")
+        or os.environ.get("XDG_STATE_HOME")
+        or (Path.home() / ".local" / "state")
+    )
     return Path(base) / "yatagarasu" / "cmux-injection-journal.sqlite"
