@@ -163,14 +163,15 @@ def test_hook_012_turn_completed_never_answered():
         observed_at="2026-07-18T21:05:00Z",
     )
     emitter.observe(user_prompt, observed_at="2026-07-18T21:05:00Z")
+    assert len(emitted) == 1, "Prompt acceptance MUST emit its in-session receipt"
 
     # Now we have an active chain for s-123. Emit a Stop for s-wrong.
     stop_wrong = SourceEventRef(
         "src", "boot", 5, "ev-5", "agent.hook.Stop", session_id="s-wrong"
     )
     emitter.observe(stop_wrong, observed_at="2026-07-18T21:05:00Z")
-    assert len(emitted) == 0, (
-        "Stray Stop from an unrelated session MUST NOT emit a receipt"
+    assert len(emitted) == 1, (
+        "Stray Stop from an unrelated session MUST NOT emit another receipt"
     )
 
     # Fixture D: UserPromptSubmit without session_id clears buffer
@@ -226,15 +227,20 @@ def test_hook_012_turn_completed_never_answered():
         observed_at="2026-07-18T21:05:00Z",
     )
 
-    assert len(emitted) == 1, "Only the successful s-999 chain should emit"
-    assert emitted[0].delivery_id == "d-2", (
+    assert len(emitted) == 3, "The successful s-999 chain must emit both stages"
+    d2_receipts = emitted[1:3]
+    assert [receipt.evidence_class for receipt in d2_receipts] == [
+        "harness.prompt_accepted",
+        "harness.turn_completed",
+    ]
+    assert all(receipt.delivery_id == "d-2" for receipt in d2_receipts), (
         "Buffer was not cleared on missing session_id, leading to cross-delivery misattribution!"
     )
     # To prove it has independent origins:
     # If the emitter populated the SourceEventRef from the *authoritative* store instead of the *observed* wire,
     # prompt.binding_id would match the authoritative delivery. Here, emitted[0].proof.source_events[1]
     # is the prompt_event. Its binding_id should be from decoded_marker_2 (the wire payload).
-    prompt_ev = emitted[0].proof.source_events[1]
+    prompt_ev = d2_receipts[0].proof.source_events[1]
     assert prompt_ev.binding_id == "b-2", (
         "Prompt event MUST take binding_id from the wire payload"
     )
@@ -244,9 +250,9 @@ def test_hook_012_turn_completed_never_answered():
         "src", "boot", 6, "ev-6", "agent.hook.Stop", session_id="s-123"
     )
     emitter.observe(stop_correct, observed_at="2026-07-18T21:06:00Z")
-    assert len(emitted) == 2, "Correlated Stop MUST emit exactly one receipt"
+    assert len(emitted) == 4, "Correlated Stop MUST emit exactly one receipt"
 
-    receipt = emitted[1]
+    receipt = emitted[-1]
 
     # Assertion 1: evidence class is harness.turn_completed
     assert receipt.evidence_class == "harness.turn_completed"

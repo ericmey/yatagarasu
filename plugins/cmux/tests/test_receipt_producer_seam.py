@@ -24,11 +24,17 @@ from yatagarasu_cmux.runtime import RuntimeConfig
 from yatagarasu_cmux.supervisor import Supervisor
 
 from yatagarasu_core import (
+    CoreStore,
     CorrelationRule,
     Delivery,
     DeliveryMode,
+    DeliveryState,
     EvidenceClass,
     ProofMethodRegistration,
+    ProviderKind,
+    Receipt,
+    ReceiptReducer,
+    SessionBinding,
     SourceKind,
 )
 from yatagarasu_core.proofs import MarkerAuthority, validate_session_proof
@@ -64,7 +70,12 @@ def _registration() -> ProofMethodRegistration:
         source_kind=SourceKind.EVENT_BUS,
         source_instance_id=SOURCE_INSTANCE,
         correlation_rule=CorrelationRule.CMUX_HARNESS_CHAIN,
-        evidence_classes=frozenset({EvidenceClass.HARNESS_TURN_COMPLETED}),
+        evidence_classes=frozenset(
+            {
+                EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+                EvidenceClass.HARNESS_TURN_COMPLETED,
+            }
+        ),
     )
 
 
@@ -125,8 +136,11 @@ def _run_live_shaped_chain(tmp_path, delivery, wire_token, authoritative_marker)
         run = supervisor.run_once()
 
     assert run.inserted_event_count == 4
-    assert len(emitted) == 1
-    return emitted[0]
+    assert [receipt.evidence_class for receipt in emitted] == [
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+        EvidenceClass.HARNESS_TURN_COMPLETED,
+    ]
+    return emitted[-1]
 
 
 def test_live_shaped_frames_cross_resident_and_validate(tmp_path, delivery) -> None:
@@ -150,6 +164,96 @@ def test_live_shaped_frames_cross_resident_and_validate(tmp_path, delivery) -> N
         )
         is None
     )
+
+
+def test_live_producer_advances_real_reducer_through_both_stages(
+    tmp_path, delivery
+) -> None:
+    """Reopen SEV-1 if the producer omits either half of the linear chain."""
+    authority = MarkerAuthority(REAL_KEY)
+    marker = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
+    store = CoreStore(tmp_path / "two-stage-core.sqlite")
+    store.add_delivery(delivery)
+    store.set_dispatching(delivery.delivery_id)
+    store.register_provider(
+        PROVIDER_ID,
+        ProviderKind.SESSION_TRANSPORT,
+        {
+            EvidenceClass.TRANSPORT_SUBMIT_ACK,
+            EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+            EvidenceClass.HARNESS_TURN_COMPLETED,
+        },
+    )
+    store.register_session_binding(
+        SessionBinding(
+            binding_id=delivery.binding_id,
+            recipient_id=delivery.recipient_id,
+            provider_id=PROVIDER_ID,
+            adapter_instance_id="cmux-live-adapter",
+            harness="codex",
+            session_id=SESSION_ID,
+            established_at=ISSUED_AT,
+            expires_at=EXPIRES_AT,
+            proof_methods=(_registration(),),
+        )
+    )
+    reducer = ReceiptReducer(store, authority)
+    transport = reducer.submit(
+        Receipt(
+            receipt_id="rec-live-transport",
+            event_id=delivery.event_id,
+            delivery_id=delivery.delivery_id,
+            attempt_id=delivery.attempt_id,
+            binding_id=delivery.binding_id,
+            evidence_provider_id=PROVIDER_ID,
+            evidence_class=EvidenceClass.TRANSPORT_SUBMIT_ACK,
+            proof_method=PROOF_METHOD,
+            observed_at=OBSERVED_AT,
+        )
+    )
+    assert transport.state is DeliveryState.TRANSPORT_SUBMITTED
+
+    results = []
+    producer = DerivedEventReceiptProducer(
+        core_client=lambda receipt: results.append(reducer.submit(receipt)),
+        provider_id=PROVIDER_ID,
+        delivery_lookup=lambda delivery_id: (
+            (delivery, marker) if delivery_id == delivery.delivery_id else None
+        ),
+    )
+    projector = EventProjector(source_instance_id=SOURCE_INSTANCE)
+    frames = [
+        event("boot-two-stage", 1, name="surface.input_sent"),
+        event(
+            "boot-two-stage",
+            2,
+            name="workspace.prompt.submitted",
+            payload={"message_preview": encode_short(marker)},
+        ),
+        event(
+            "boot-two-stage",
+            3,
+            name="agent.hook.UserPromptSubmit",
+            payload={"session_id": SESSION_ID, "phase": "completed"},
+        ),
+        event(
+            "boot-two-stage",
+            4,
+            name="agent.hook.Stop",
+            payload={"session_id": SESSION_ID, "phase": "completed"},
+        ),
+    ]
+    for frame in frames:
+        frame["occurred_at"] = OBSERVED_AT
+        producer.observe(projector.project(frame, expected_boot_id="boot-two-stage"))
+
+    assert [result.status for result in results] == ["accepted", "accepted"]
+    assert [result.state for result in results] == [
+        DeliveryState.IN_SESSION,
+        DeliveryState.PROCESSED,
+    ]
+    assert store.get_delivery(delivery.delivery_id).state is DeliveryState.PROCESSED
+    store.close()
 
 
 def test_wire_signature_mismatch_survives_translation_and_is_rejected(
@@ -285,14 +389,20 @@ def test_restart_rebuilds_an_active_chain_before_stop_arrives(
     with CmuxSocketHarness(socket_path, [accepted_frames]):
         first = supervisor().run_once()
     assert first.inserted_event_count == 3
-    assert emitted == []
+    assert [receipt.evidence_class for receipt in emitted] == [
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED
+    ]
 
     with CmuxSocketHarness(socket_path, [stop_frames]):
         second = supervisor().run_once()
     assert second.reconnect_after_seq == (3,)
-    assert len(emitted) == 1
-    assert emitted[0].proof is not None
-    assert [event.event_name for event in emitted[0].proof.source_events] == [
+    assert [receipt.evidence_class for receipt in emitted] == [
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+        EvidenceClass.HARNESS_TURN_COMPLETED,
+    ]
+    assert emitted[-1].proof is not None
+    assert [event.event_name for event in emitted[-1].proof.source_events] == [
         "surface.input_sent",
         "workspace.prompt.submitted",
         "agent.hook.UserPromptSubmit",
@@ -390,8 +500,10 @@ def test_literal_duplicate_capture_is_normalized_before_emission(delivery) -> No
     ]
 
 
-def test_literal_duplicate_capture_emits_one_valid_receipt(tmp_path, delivery) -> None:
-    """The exact captured sequence must validate without a synthetic fixture."""
+def test_literal_duplicate_capture_emits_two_valid_receipt_stages(
+    tmp_path, delivery
+) -> None:
+    """The exact capture must emit both valid stages without a synthetic fixture."""
     authority = MarkerAuthority(REAL_KEY)
     marker = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
     source_events = _captured_duplicate_frames(authority.encode(marker))
@@ -427,8 +539,11 @@ def test_literal_duplicate_capture_emits_one_valid_receipt(tmp_path, delivery) -
         run = supervisor.run_once()
 
     assert run.inserted_event_count == 8
-    assert len(emitted) == 1
-    receipt = emitted[0]
+    assert [item.evidence_class for item in emitted] == [
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+        EvidenceClass.HARNESS_TURN_COMPLETED,
+    ]
+    receipt = emitted[-1]
     assert receipt.proof is not None
     assert [item.seq for item in receipt.proof.source_events] == [
         25573,
@@ -489,8 +604,11 @@ def test_literal_duplicate_capture_preserves_broken_signature(
     with CmuxSocketHarness(socket_path, [frames]):
         supervisor.run_once()
 
-    assert len(emitted) == 1
-    receipt = emitted[0]
+    assert [item.evidence_class for item in emitted] == [
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+        EvidenceClass.HARNESS_TURN_COMPLETED,
+    ]
+    receipt = emitted[-1]
     assert receipt.proof is not None
     assert receipt.proof.source_events[1].marker_signature == forged.signature
     assert (
@@ -656,7 +774,7 @@ def _phase_ordered_live_frames(wire_token: str) -> list[dict[str, object]]:
     return frames
 
 
-def test_phase_ordered_live_capture_normalizes_to_one_valid_receipt(
+def test_phase_ordered_live_capture_normalizes_to_two_valid_receipt_stages(
     tmp_path, delivery
 ) -> None:
     """SEV-1 reopen: phase duplication/order prevents a live proof chain."""
@@ -733,8 +851,11 @@ def test_phase_ordered_live_capture_normalizes_to_one_valid_receipt(
         run = supervisor.run_once()
 
     assert run.inserted_event_count == 14
-    assert len(emitted) == 1
-    receipt = emitted[0]
+    assert [item.evidence_class for item in emitted] == [
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+        EvidenceClass.HARNESS_TURN_COMPLETED,
+    ]
+    receipt = emitted[-1]
     assert receipt.proof is not None
     assert [item.seq for item in receipt.proof.source_events] == [
         29727,
