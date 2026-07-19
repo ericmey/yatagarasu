@@ -14,11 +14,16 @@ from collections.abc import Iterable
 import pytest
 from yatagarasu_cmux import (
     EVENT_INPUT_SENT,
+    EVENT_PROMPT_SUBMITTED,
+    EventCursor,
+    EventOutbox,
+    EventStreamResident,
     Injector,
     Marker,
     SubmitOutcome,
+    UnixCmuxSocketClient,
 )
-from yatagarasu_cmux.journal import InjectionJournal
+from yatagarasu_cmux.journal import InjectionJournal, JournalState
 
 from yatagarasu_core import (
     BroadcastKernel,
@@ -39,6 +44,14 @@ from yatagarasu_core import (
     SourceKind,
 )
 
+from .socket_harness import (
+    CmuxSocketHarness,
+    ack,
+    event,
+    short_socket_path,
+    slow_consumer,
+)
+
 PROOF_METHOD = "cmux.event_bus.harness_hook_relay"
 OBSERVED_AT = "2026-07-18T23:40:00Z"
 SIGNING_KEY = b"acceptance-only-signing-key"
@@ -46,11 +59,100 @@ MARKER_AUTHORITY = MarkerAuthority(b"acceptance-core-marker-key")
 SOURCE_INSTANCE = "cmux-acceptance-resident"
 
 
-@pytest.mark.skip(
-    reason="Y-CMUX-006 requires the production event-stream resident in issue #22"
-)
-def test_y_cmux_006_slow_consumer_reconnect_has_no_double_injection() -> None:
+def test_y_cmux_006_slow_consumer_reconnect_has_no_double_injection(
+    tmp_path,
+) -> None:
     """Reopen SEV-1 if replay causes any delivery to enter a pane twice."""
+    socket_path = short_socket_path(tmp_path, "acceptance-006")
+    transport = _Transport()
+    with InjectionJournal(tmp_path / "injection.sqlite") as journal:
+        injector = Injector(
+            resolver=_Resolver(),
+            transport=transport,
+            observer=_Observer((EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED)),
+            signing_key=SIGNING_KEY,
+            on_effect_pending=lambda delivery_id, _surface: journal.prepare(
+                delivery_id=delivery_id,
+                binding_id="binding-006",
+                seat_id="yua",
+                marker="marker-006",
+                now=1.0,
+            ),
+        )
+        submitted = injector.deliver("yua", "delivery-006", "one turn only")
+        assert submitted.outcome is SubmitOutcome.SUBMITTED
+        journal.settle(
+            delivery_id="delivery-006",
+            state=JournalState.INJECTED,
+            now=2.0,
+            source_events=submitted.source_events,
+        )
+
+        scripts = [
+            [
+                ack(
+                    "boot-006",
+                    replay_count=0,
+                    gap=False,
+                    requested_after_seq=None,
+                    latest_seq=1,
+                ),
+                event("boot-006", 1, name="surface.input_sent"),
+                slow_consumer(5),
+            ],
+            [
+                ack(
+                    "boot-006",
+                    replay_count=4,
+                    gap=False,
+                    requested_after_seq=1,
+                    latest_seq=5,
+                ),
+                *(event("boot-006", seq) for seq in range(2, 6)),
+            ],
+        ]
+        with EventOutbox(tmp_path / "event-outbox.sqlite") as outbox:
+            with CmuxSocketHarness(socket_path, scripts) as harness:
+                run = EventStreamResident(
+                    source_instance_id="cmux-resident-006",
+                    client=UnixCmuxSocketClient(socket_path),
+                    outbox=outbox,
+                    marker_key=SIGNING_KEY,
+                ).run(max_connections=2)
+
+            durable_cursor = outbox.cursor("cmux-resident-006")
+            audit = outbox.audit_rows("cmux-resident-006")
+            source_rows = outbox.outbox_rows("cmux-resident-006")
+
+        injection_count_after_replay = len(transport.sent)
+        double_injection = (
+            {"delivery-006"} if injection_count_after_replay != 1 else set()
+        )
+        observations = {
+            "slow_consumer_received": run.slow_consumer_received,
+            "disconnect_at_seq": run.disconnect_at_seq,
+            "S_persisted": run.reconnect_after_seq[1],
+            "reconnect_at_seq": harness.stream_requests[1]["params"]["after_seq"],
+            "replay_event_count": run.replay_event_count,
+            "outbox_event_count": len(source_rows),
+            "injection_event_count": injection_count_after_replay,
+            "double_injection.event_id": double_injection,
+            "cursor": durable_cursor,
+            "audit_kinds": [row["kind"] for row in audit],
+        }
+
+    assert observations == {
+        "slow_consumer_received": True,
+        "disconnect_at_seq": 5,
+        "S_persisted": 1,
+        "reconnect_at_seq": 1,
+        "replay_event_count": 4,
+        "outbox_event_count": 5,
+        "injection_event_count": 1,
+        "double_injection.event_id": set(),
+        "cursor": EventCursor("cmux-resident-006", "boot-006", 5),
+        "audit_kinds": ["reconnect_replay"],
+    }
 
 
 @pytest.mark.skip(
@@ -546,8 +648,11 @@ class _Transport:
 
 
 class _Observer:
+    def __init__(self, events: tuple[str, ...] = (EVENT_INPUT_SENT,)) -> None:
+        self._events = events
+
     def observe(self, marker: Marker, timeout_s: float) -> Iterable[str]:
-        yield EVENT_INPUT_SENT
+        yield from self._events
 
 
 def test_y_cmux_010_incomplete_busy_submit_holds_and_never_requeues() -> None:
