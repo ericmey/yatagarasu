@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import socketserver
 import threading
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from hashlib import sha256
 from pathlib import Path
 
@@ -47,8 +47,12 @@ class _Handler(socketserver.StreamRequestHandler):
                 self._write(frame)
             return
 
-        harness.snapshot_requests.append(request)
-        self._write({"id": request.get("id"), "ok": True, "result": {"method": method}})
+        harness.command_requests.append(request)
+        if harness.command_handler is not None:
+            response = harness.command_handler(request)
+        else:
+            response = {"ok": True, "result": {"method": method}}
+        self._write({**response, "id": request.get("id")})
 
     def _read_request(self) -> dict[str, object]:
         raw = self.rfile.readline()
@@ -74,13 +78,17 @@ class CmuxSocketHarness:
         stream_scripts: Iterable[Iterable[dict[str, object]]],
         *,
         password: str | None = None,
+        command_handler: Callable[[dict[str, object]], dict[str, object]] | None = None,
     ) -> None:
         self.path = str(path)
         self.stream_scripts = [list(script) for script in stream_scripts]
         self.password = password
         self.stream_requests: list[dict[str, object]] = []
-        self.snapshot_requests: list[dict[str, object]] = []
+        self.command_requests: list[dict[str, object]] = []
+        # Backward-compatible name: snapshots are command RPCs too.
+        self.snapshot_requests = self.command_requests
         self.auth_attempts: list[dict[str, object]] = []
+        self.command_handler = command_handler
         self._server = _Server(self.path, _Handler)
         self._server.harness = self  # type: ignore[attr-defined]
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
