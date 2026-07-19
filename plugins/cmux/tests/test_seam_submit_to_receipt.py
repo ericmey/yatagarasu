@@ -67,8 +67,11 @@ class _Transport:
         self.sent.append((surface, text))
 
     def submit(self, surface: str, submit_key: str) -> None:
-        # Two args since #56: the submit key is per-harness (Enter / Tab /
-        # slash-queue). Keeping the old one-arg stub did not fail loudly — the
+        # Two args since #56: the submit KEY is per-harness — Enter for Claude
+        # Code, Tab for Codex, Enter for Hermes. Hermes' `/queue ` is a TEXT
+        # PREFIX on the body, not a submit key; my first version of this comment
+        # listed it as a third key, which is a description of a model we do not
+        # have. Keeping the old one-arg stub did not fail loudly — the
         # TypeError was swallowed by deliver()'s `except Exception` and returned
         # as UNKNOWN "transport error", so six tests failed with a wrong-outcome
         # assertion instead of a signature error.
