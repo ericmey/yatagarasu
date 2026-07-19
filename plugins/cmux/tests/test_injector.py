@@ -332,6 +332,7 @@ def test_bad_signing_key_returns_verdict_not_exception():
         observer=FakeObserver([]),
         marker_authority=MarkerAuthority(KEY),
     )
+
     # Monkeypatch the minting to simulate an error (like an invalid key configuration handled natively by core MarkerAuthority)
     def fail_mint(*args, **kwargs):
         raise ValueError("signing key must not be empty")
@@ -351,6 +352,7 @@ def test_bad_delivery_id_returns_verdict_not_exception():
     we simulate the failure by mocking the mint method.
     """
     inj = build()
+
     def fail_mint(*args, **kwargs):
         raise ValueError("delivery_id is not a valid token")
 
@@ -386,6 +388,7 @@ def test_nothing_is_injected_when_minting_fails():
         observer=FakeObserver([]),
         marker_authority=MarkerAuthority(KEY),
     )
+
     def fail_mint(*args, **kwargs):
         raise ValueError("signing key must not be empty")
 

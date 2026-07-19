@@ -29,9 +29,9 @@ import pytest
 
 _SKIP_FLOOR_ENV = "YATAGARASU_SKIP_FLOOR"
 # Default floor is the EXACT count of honestly-skipped hooks with tracked
-# issues — not a ceiling. As of 2026-07-19 there are 2, each referencing an
+# issues — not a ceiling. As of 2026-07-19 there is 1, referencing an
 # open issue in the path-to-completion plan (#37):
-#   Y-CMUX-010 -> #26  Y-CMUX-014 -> #29
+#   Y-CMUX-014 -> #29
 #
 # History, kept because it is the argument for the `!=` check below:
 #   Y-CMUX-008 -> #24 landed in PR #39, floor 7 -> 6.
@@ -45,6 +45,8 @@ _SKIP_FLOOR_ENV = "YATAGARASU_SKIP_FLOOR"
 #   Y-CMUX-012 -> #28 began passing in PR #42 once the injector minted through
 #     MarkerAuthority and the emitter could finally see a marker. Floor 3 -> 2,
 #     and the mechanism did the reminding: the run that closed the skip failed.
+#   Y-CMUX-010 -> #26 began passing in PR #56 once harness-specific next-turn
+#     profiles made the busy-pane path executable. Floor 2 -> 1.
 #     Note the `!=` gate guards the NUMBER; nothing guards this prose beside it,
 #     and it went stale here once already. Change both together.
 #
@@ -54,7 +56,7 @@ _SKIP_FLOOR_ENV = "YATAGARASU_SKIP_FLOOR"
 # Both directions are enforced. An UNTRACKED skip is the failure mode this
 # conftest was built to detect; a STALE floor is the one it kept missing.
 # See the "a skip beats a lie" rule in issue #37.
-_DEFAULT_FLOOR = 2
+_DEFAULT_FLOOR = 1
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

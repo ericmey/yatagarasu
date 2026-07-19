@@ -33,8 +33,8 @@ import pytest
 from yatagarasu_cmux import (
     EVENT_INPUT_SENT,
     EVENT_PROMPT_SUBMITTED,
+    HarnessKind,
     Injector,
-    Marker,
     ResolutionError,
 )
 from yatagarasu_cmux.outcome import SubmitResult
@@ -58,7 +58,14 @@ def _deliver(inj: Injector, identity: str, delivery_id: str, body: str):
     delivery = Delivery(
         "ev", delivery_id, "attempt", "b-1", identity, DeliveryMode.SESSION_BOUND
     )
-    return inj.deliver(identity, delivery, body, ISSUED_AT, EXPIRES_AT)
+    return inj.deliver(
+        identity,
+        delivery,
+        body,
+        ISSUED_AT,
+        EXPIRES_AT,
+        harness=HarnessKind.CLAUDE_CODE,
+    )
 
 
 class _Resolver:
@@ -84,20 +91,20 @@ class _Resolver:
 class _Transport:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
-        self.submitted: list[str] = []
+        self.submitted: list[tuple[str, str]] = []
 
     def send_text(self, surface: str, text: str) -> None:
         self.sent.append((surface, text))
 
-    def submit(self, surface: str) -> None:
-        self.submitted.append(surface)
+    def submit(self, surface: str, key: str) -> None:
+        self.submitted.append((surface, key))
 
 
 class _Observer:
     def __init__(self, events: list[str]) -> None:
         self._events = list(events)
 
-    def observe(self, marker: Marker, timeout_s: float) -> Iterable[str]:
+    def observe(self, marker, timeout_s: float) -> Iterable[str]:
         yield from self._events
 
 
