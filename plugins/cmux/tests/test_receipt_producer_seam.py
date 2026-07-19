@@ -292,3 +292,99 @@ def test_restart_rebuilds_an_active_chain_before_stop_arrives(
         "agent.hook.UserPromptSubmit",
         "agent.hook.Stop",
     ]
+
+
+def _run_duplicated_live_chain(tmp_path, delivery, wire_token, authoritative_marker):
+    """Drive the producer with the ACTUAL live sequence, duplicates included.
+
+    Not a hand-built four-event chain. This is the shape a real Codex 0.144.5
+    seat produced on 2026-07-19 (#59): one ``surface.input_sent``, three
+    ``workspace.prompt.submitted`` all carrying the same marker, three
+    ``agent.hook.UserPromptSubmit``, one ``agent.hook.Stop``.
+
+    Building the happy path from four events is exactly what let this survive —
+    every suite was green while the real stream could never validate.
+    """
+    emitted = []
+    preview = {"message_preview": f"{wire_token} payload omitted"}
+    hook = {"session_id": SESSION_ID, "hook_event_name": "UserPromptSubmit"}
+    source_events = [
+        event("boot-dup", 1, name="surface.input_sent"),
+        event("boot-dup", 2, name="workspace.prompt.submitted", payload=preview),
+        event("boot-dup", 3, name="agent.hook.UserPromptSubmit", payload=hook),
+        event("boot-dup", 4, name="workspace.prompt.submitted", payload=preview),
+        event("boot-dup", 5, name="agent.hook.UserPromptSubmit", payload=hook),
+        event("boot-dup", 6, name="workspace.prompt.submitted", payload=preview),
+        event("boot-dup", 7, name="agent.hook.UserPromptSubmit", payload=hook),
+        event(
+            "boot-dup",
+            8,
+            name="agent.hook.Stop",
+            payload={"session_id": SESSION_ID, "hook_event_name": "Stop"},
+        ),
+    ]
+    for source_event in source_events:
+        source_event["occurred_at"] = OBSERVED_AT
+    frames = [
+        ack(
+            "boot-dup",
+            replay_count=0,
+            gap=False,
+            requested_after_seq=None,
+            latest_seq=8,
+        ),
+        *source_events,
+    ]
+    socket_path = short_socket_path(tmp_path, "receipt-dup")
+    config = RuntimeConfig(
+        socket_path=socket_path,
+        state_dir=tmp_path / "state",
+        password=None,
+        source_instance_id=SOURCE_INSTANCE,
+    )
+    config.state_dir.mkdir()
+    supervisor = Supervisor.with_receipts(
+        config,
+        core_client=emitted.append,
+        provider_id=PROVIDER_ID,
+        delivery_lookup=lambda delivery_id: (
+            (delivery, authoritative_marker)
+            if delivery_id == delivery.delivery_id
+            else None
+        ),
+    )
+    with CmuxSocketHarness(socket_path, [frames]):
+        run = supervisor.run_once()
+
+    assert run.inserted_event_count == 8, "all eight live events must be durable"
+    return emitted
+
+
+def test_live_duplicate_prompts_collapse_into_one_valid_chain(
+    tmp_path, delivery
+) -> None:
+    """#59: the real 1+3+3+1 stream must produce exactly one valid receipt.
+
+    Before the normaliser this returned ``source_event_chain_wrong_shape``, so
+    no live turn could ever produce a receipt while every test stayed green.
+    """
+    authority = MarkerAuthority(REAL_KEY)
+    authoritative = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
+    emitted = _run_duplicated_live_chain(
+        tmp_path, delivery, authority.encode(authoritative), authoritative
+    )
+
+    assert len(emitted) == 1, (
+        "three duplicate prompt events carrying the same marker are one logical"
+        f" submit; got {len(emitted)} receipts"
+    )
+
+    error = validate_session_proof(
+        proof=emitted[0].proof,
+        delivery=delivery,
+        evidence_class=EvidenceClass.HARNESS_TURN_COMPLETED,
+        registration=_registration(),
+        marker_authority=authority,
+        observed_at=OBSERVED_AT,
+    )
+    assert error is None, f"the deduplicated live chain must validate, got {error!r}"
