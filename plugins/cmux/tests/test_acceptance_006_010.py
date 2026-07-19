@@ -19,7 +19,6 @@ from yatagarasu_cmux import (
     EventOutbox,
     EventStreamResident,
     Injector,
-    Marker,
     NotificationLifecycle,
     SubmitOutcome,
     UnixCmuxSocketClient,
@@ -71,7 +70,7 @@ def test_y_cmux_006_slow_consumer_reconnect_has_no_double_injection(
             resolver=_Resolver(),
             transport=transport,
             observer=_Observer((EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED)),
-            signing_key=SIGNING_KEY,
+            marker_authority=MarkerAuthority(SIGNING_KEY),
             on_effect_pending=lambda delivery_id, _surface: journal.prepare(
                 delivery_id=delivery_id,
                 binding_id="binding-006",
@@ -80,13 +79,28 @@ def test_y_cmux_006_slow_consumer_reconnect_has_no_double_injection(
                 now=1.0,
             ),
         )
-        submitted = injector.deliver("yua", "delivery-006", "one turn only")
-        assert submitted.outcome is SubmitOutcome.SUBMITTED
+
+        delivery = Delivery(
+            "ev-006",
+            "delivery-006",
+            "attempt",
+            "b-1",
+            "yua",
+            DeliveryMode.SESSION_BOUND,
+        )
+        result = injector.deliver(
+            "yua",
+            delivery,
+            "test message",
+            "2026-07-19T20:00:00Z",
+            "2026-07-19T20:05:00Z",
+        )
+        assert result.outcome is SubmitOutcome.SUBMITTED
         journal.settle(
             delivery_id="delivery-006",
             state=JournalState.INJECTED,
             now=2.0,
-            source_events=submitted.source_events,
+            source_events=tuple(result.source_events),
         )
 
         scripts = [
@@ -794,7 +808,7 @@ class _Observer:
     def __init__(self, events: tuple[str, ...] = (EVENT_INPUT_SENT,)) -> None:
         self._events = events
 
-    def observe(self, marker: Marker, timeout_s: float) -> Iterable[str]:
+    def observe(self, marker, timeout_s: float) -> Iterable[str]:
         yield from self._events
 
 
@@ -810,10 +824,15 @@ def test_y_cmux_010_incomplete_busy_submit_holds_and_never_requeues() -> None:
         resolver=_Resolver(),
         transport=transport,
         observer=_Observer(),
-        signing_key=SIGNING_KEY,
+        marker_authority=MarkerAuthority(SIGNING_KEY),
     )
 
-    result = injector.deliver("yua", "delivery-010", "next turn")
+    delivery = Delivery(
+        "ev-010", "delivery-010", "attempt", "b-1", "yua", DeliveryMode.SESSION_BOUND
+    )
+    result = injector.deliver(
+        "yua", delivery, "next turn", "2026-07-19T20:00:00Z", "2026-07-19T20:05:00Z"
+    )
 
     observations = {
         "outcome": result.outcome.value,
