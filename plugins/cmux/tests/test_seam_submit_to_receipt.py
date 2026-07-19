@@ -254,8 +254,19 @@ class SubmitToReceiptSeam(unittest.TestCase):
         self.assertEqual(outcome.reason, "disposition_not_allowed")
 
     def test_the_proof_method_is_the_one_the_receipt_declares(self) -> None:
-        """A translator that named a proof method the provider never registered
-        would be rejected downstream for a reason unrelated to the send."""
+        """The receipt carries the transport's own audit label, and no proof.
+
+        The first version of this docstring claimed an unregistered proof method
+        would be rejected. It would not: registration is checked against a
+        session binding only for the session-proof evidence classes
+        (``receipts.py:204-208``), and ``transport.submit_ack`` is not one of
+        them — there the reducer only requires the field to be non-empty
+        (``receipts.py:49``). Copilot caught the overclaim.
+
+        What this actually asserts is narrower and true: the label is stable, and
+        no ``proof`` bundle is attached, because a submit ack is transport-level
+        evidence and attaching a session proof would overstate what was observed.
+        """
         item = _delivery("3")
         receipt = submit_ack_receipt(
             self._deliver(item, [EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED]),

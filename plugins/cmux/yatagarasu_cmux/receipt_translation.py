@@ -1,9 +1,19 @@
 """The seam out of the injector: ``SubmitResult`` -> core ``Receipt``.
 
-Closes #50, found in Tama's seam audit (#48). Every production send through the
-cmux plugin ended at a ``SubmitResult`` that went nowhere — the core reducer had
-no record that the send ever happened. Both halves were unit-green; nothing
-crossed between them.
+Addresses #50, found in Tama's seam audit (#48). Every production send through the
+cmux plugin ends at a ``SubmitResult`` that goes nowhere — the core reducer has no
+record that the send ever happened. Both halves were unit-green; nothing crossed
+between them.
+
+**Not yet wired into production.** Present tense above is deliberate: this module
+supplies the missing translation and proves it against the real reducer, but
+nothing in production calls ``submit_ack_receipt`` yet. Copilot caught the first
+version of this docstring claiming the dead-end was already fixed — which would
+have been the same defect the seam audit exists to find, in the fix for it.
+
+The caller lands with the injector's ``MarkerAuthority`` change (#47), because
+that is where ``Injector.deliver`` acquires the ``Delivery`` record this function
+needs as its second argument. Until then #50 stays open.
 
 The whole of the design is in what this module *refuses* to translate.
 
@@ -34,8 +44,19 @@ from yatagarasu_core import Delivery, EvidenceClass, Receipt
 
 from .outcome import SubmitOutcome, SubmitResult
 
-#: What the cmux transport claims about how it knows. The reducer registers
-#: proof methods, so this string is a contract, not a label.
+#: What the cmux transport claims about how it knows.
+#:
+#: Deliberately understated, because the first draft of this comment said the
+#: reducer "registers proof methods, so this string is a contract, not a label"
+#: and Copilot caught that it overstates the enforcement. Proof-method
+#: registration is checked against a session binding only for the session-proof
+#: evidence classes (``receipts.py:204-208``, inside ``_validate_session_receipt``).
+#: For ``transport.submit_ack`` the reducer only requires the field to be
+#: non-empty (``receipts.py:49``).
+#:
+#: So this is an audit label the reducer stores and compares for receipt
+#: identity, not a credential it validates. Saying otherwise would describe a
+#: check that does not run.
 PROOF_METHOD = "cmux.transport.submit_ack"
 
 
