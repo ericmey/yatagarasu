@@ -187,6 +187,15 @@ def pytest_terminal_summary(
     )
     terminalreporter.write_sep("=", "yatagarasu", yellow=True)
     terminalreporter.write_line(line)
+
+    # Same guard as pytest_sessionfinish, for the same reason. I fixed the exit
+    # code to stop masking INTERRUPTED / INTERNAL_ERROR / USAGE_ERROR /
+    # NO_TESTS_COLLECTED and left this printer shouting FAIL over them anyway —
+    # half a fix, which reads to an operator as the whole diagnosis. Copilot
+    # caught the half I missed.
+    if exitstatus not in {pytest.ExitCode.OK, pytest.ExitCode.TESTS_FAILED}:
+        return
+
     if skipped > floor:
         terminalreporter.write_line(
             f"FAIL: {skipped} skips exceed the floor of {floor}. "
@@ -208,9 +217,22 @@ def pytest_terminal_summary(
             f"the floor is overridden (--skip-floor / {_SKIP_FLOOR_ENV}); "
             f"adjust or unset that override"
             if overridden
-            else f"lower _DEFAULT_FLOOR to {skipped} in tests/conftest.py and "
+            else f"lower _DEFAULT_FLOOR to {skipped} in conftest.py and "
             f"delete the closed skip's line from the tracked list above it"
         )
+        # A partial run trips this too, and that is deliberate rather than
+        # incidental: the floor describes the FULL suite, so a subtree run
+        # producing fewer skips is not a smaller pass, it is not the gate at
+        # all. Saying so out loud is the suite-scope version of Tama's rule
+        # that a partially-run suite is no evidence.
+        partial = set(config.args or ()) - {str(config.rootpath)}
+        if partial:
+            remedy = (
+                f"this looks like a PARTIAL run ({', '.join(sorted(partial))}). "
+                f"The floor describes the whole suite, so this count is not "
+                f"evidence about it — run `make check` for the real gate. If "
+                f"you did mean to change the floor, {remedy}"
+            )
         terminalreporter.write_line(
             f"FAIL: {skipped} skips are BELOW the floor of {floor}. "
             f"You closed a skip — well done — and the floor did not move with "
