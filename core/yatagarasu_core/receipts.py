@@ -48,11 +48,7 @@ class ReceiptReducer:
     def submit(self, receipt: Receipt) -> ReceiptResult:
         if not receipt.proof_method or not receipt.observed_at:
             return self._reject("audit_fields_required", receipt)
-        if (
-            receipt.evidence_class in SESSION_PROOF_EVIDENCE
-            and receipt.proof is not None
-            and not isinstance(receipt.proof, SessionProof)
-        ):
+        if receipt.proof is not None and not isinstance(receipt.proof, SessionProof):
             return self._reject("session_proof_shape_invalid", receipt)
         existing_result = self._existing_receipt_result(receipt)
         if existing_result is not None:

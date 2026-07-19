@@ -404,6 +404,50 @@ def test_malformed_proof_object_is_rejected_instead_of_escaping(
     )
 
 
+def test_malformed_proof_on_transport_receipt_is_rejected_before_storage() -> None:
+    store = CoreStore()
+    try:
+        delivery = Delivery(
+            event_id="event-transport-shape",
+            delivery_id="delivery-transport-shape",
+            attempt_id="attempt-transport-shape",
+            binding_id="binding-transport-shape",
+            recipient_id="yua",
+            delivery_mode=DeliveryMode.SESSION_BOUND,
+        )
+        store.add_delivery(delivery)
+        store.set_dispatching(delivery.delivery_id)
+        store.register_provider(
+            "transport-shape-provider",
+            ProviderKind.SESSION_TRANSPORT,
+            {EvidenceClass.TRANSPORT_SUBMIT_ACK},
+        )
+        malformed = Receipt(
+            receipt_id="receipt-transport-shape",
+            event_id=delivery.event_id,
+            delivery_id=delivery.delivery_id,
+            attempt_id=delivery.attempt_id,
+            binding_id=delivery.binding_id,
+            evidence_provider_id="transport-shape-provider",
+            evidence_class=EvidenceClass.TRANSPORT_SUBMIT_ACK,
+            proof_method="cmux.transport",
+            observed_at=NOW,
+            proof="not-a-proof",  # type: ignore[arg-type]
+        )
+
+        result = ReceiptReducer(store).submit(malformed)
+
+        assert (result.status, result.reason) == (
+            "rejected",
+            "session_proof_shape_invalid",
+        )
+        assert store.get_delivery(delivery.delivery_id).state is (
+            DeliveryState.DISPATCHING
+        )
+    finally:
+        store.close()
+
+
 def test_revoked_binding_cannot_advance(case: ProofCase) -> None:
     case.store.revoke_session_binding(case.delivery.binding_id)
     result = case.reducer.submit(case.prompt_receipt())
