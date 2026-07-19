@@ -165,17 +165,22 @@ def test_y_gr_51_kernel_outcomes_feed_journal_one_row_per_seat(_tmp_seam: Path) 
         # The kernel is the production source of the rows. Walk its
         # outcomes directly; do NOT reconstruct a recipient list here.
         with InjectionJournal(journal_path) as journal:
-            for outcome in result.outcomes:
+            for position, outcome in enumerate(result.outcomes):
                 assert outcome.binding_id is not None, (
                     "kernel should have produced a binding for every recipient"
                     f" in this fixture; outcome {outcome.recipient_id!r} has none"
                 )
+                # Distinct prepared_at per row. unsettled() orders by
+                # prepared_at, so identical timestamps left the tie order
+                # unspecified by SQLite — the tuple comparison below would have
+                # been flaky rather than wrong, which is worse: it passes until
+                # it does not, and then nobody trusts the assertion.
                 journal.prepare(
                     delivery_id=outcome.delivery_id,
                     binding_id=outcome.binding_id,
                     seat_id=outcome.recipient_id,
                     marker=f"[ygr:{outcome.delivery_id}:seam:canary]",
-                    now=0.0,
+                    now=float(position),
                 )
 
             unsettled = journal.unsettled()
@@ -256,13 +261,22 @@ def test_y_gr_51_unavailable_outcomes_are_not_journaled(_tmp_seam: Path) -> None
         )
 
         with InjectionJournal(journal_path) as journal:
-            for outcome in available:
+            for position, outcome in enumerate(available):
+                # Assert instead of silencing the type checker. `# type: ignore`
+                # hid the fact that a kernel bug returning an available outcome
+                # with no binding would reach InjectionJournal.prepare and fail
+                # on a NOT NULL constraint, far from the cause. Now it fails
+                # here, saying what actually went wrong.
+                assert outcome.binding_id is not None, (
+                    "the kernel marked this outcome available, so it must carry"
+                    f" a binding; {outcome.recipient_id!r} has none"
+                )
                 journal.prepare(
                     delivery_id=outcome.delivery_id,
-                    binding_id=outcome.binding_id,  # type: ignore[arg-type]
+                    binding_id=outcome.binding_id,
                     seat_id=outcome.recipient_id,
                     marker=f"[ygr:{outcome.delivery_id}:seam:b]",
-                    now=0.0,
+                    now=float(position),
                 )
 
             unsettled = journal.unsettled()
@@ -373,14 +387,18 @@ def test_y_gr_51_journal_row_count_equals_available_outcome_count(
         )
 
         with InjectionJournal(journal_path) as journal:
-            for outcome in result.outcomes:
+            for position, outcome in enumerate(result.outcomes):
                 if outcome.unavailable_reason is None:
+                    assert outcome.binding_id is not None, (
+                        "an available outcome must carry a binding;"
+                        f" {outcome.recipient_id!r} has none"
+                    )
                     journal.prepare(
                         delivery_id=outcome.delivery_id,
-                        binding_id=outcome.binding_id,  # type: ignore[arg-type]
+                        binding_id=outcome.binding_id,
                         seat_id=outcome.recipient_id,
                         marker=f"[ygr:{outcome.delivery_id}:seam:canary2]",
-                        now=0.0,
+                        now=float(position),
                     )
 
             kernel_available_count = sum(

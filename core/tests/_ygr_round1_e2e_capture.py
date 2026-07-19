@@ -108,7 +108,7 @@ def load_raw_events(path: Path = FIXTURE_PATH) -> list[dict[str, Any]]:
 def make_marker(authority: MarkerAuthority) -> Any:
     """Mint a marker consistent with the capture's context.
 
-    The marker carries the four-key contract (event_id, delivery_id,
+    The marker carries the five-field contract (event_id, delivery_id,
     attempt_id, binding_id, authority_scope) required by
     validate_session_proof. The signature is the HMAC over those fields
     under the given authority's signing key.
@@ -175,7 +175,7 @@ def dedup_to_first(
 
     Production path: Yua's #46 implements this. For testing without
     the normalizer in place, the test loads the deduped form directly
-    from the deduped_events static list below.
+    from the the deduped chain this function returns static list below.
     """
     seen_event_names: set[str] = set()
     deduped: list[dict[str, Any]] = []
