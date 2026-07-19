@@ -15,6 +15,7 @@ from yatagarasu_core import (
     SourceEventRef,
 )
 from yatagarasu_core.proofs import MarkerAuthority
+from yatagarasu_core.proofs import MarkerError as CoreMarkerError
 
 _YGR1_RE = re.compile(r"(ygr1\.[A-Za-z0-9_-]+)")
 
@@ -43,7 +44,7 @@ class ReceiptEmitter:
         # Ephemeral buffer for the current turn being built
         self._pending_input: SourceEventRef | None = None
         self._pending_prompt: SourceEventRef | None = None
-        self._pending_delivery_id: str | None = None
+        self._pending_decoded_marker: DeliveryMarker | None = None
 
     def observe(
         self, event: SourceEventRef, payload: dict | None = None, observed_at: str = ""
@@ -59,9 +60,10 @@ class ReceiptEmitter:
             if payload and "message_preview" in payload:
                 match = _YGR1_RE.search(payload["message_preview"])
                 if match:
-                    with contextlib.suppress(Exception):
-                        decoded = MarkerAuthority.decode(match.group(1))
-                        self._pending_delivery_id = decoded.delivery_id
+                    with contextlib.suppress(CoreMarkerError):
+                        self._pending_decoded_marker = MarkerAuthority.decode(
+                            match.group(1)
+                        )
         elif name == "agent.hook.UserPromptSubmit":
             try:
                 if not event.session_id:
@@ -70,16 +72,18 @@ class ReceiptEmitter:
                 if (
                     self._pending_input
                     and self._pending_prompt
-                    and self._pending_delivery_id
+                    and self._pending_decoded_marker
                 ):
-                    context = self._delivery_lookup(self._pending_delivery_id)
+                    context = self._delivery_lookup(
+                        self._pending_decoded_marker.delivery_id
+                    )
                     if context:
                         delivery, core_marker = context
                         # Populate required durable correlation fields onto the SourceEventRef
                         prompt_event = dataclasses.replace(
                             self._pending_prompt,
-                            binding_id=delivery.binding_id,
-                            marker_signature=core_marker.signature,
+                            binding_id=self._pending_decoded_marker.binding_id,
+                            marker_signature=self._pending_decoded_marker.signature,
                         )
 
                         chain = [self._pending_input, prompt_event, event]
@@ -92,7 +96,7 @@ class ReceiptEmitter:
                 # Clear ephemeral buffer on every exit path
                 self._pending_input = None
                 self._pending_prompt = None
-                self._pending_delivery_id = None
+                self._pending_decoded_marker = None
 
         elif name == "agent.hook.Stop":
             if not event.session_id:

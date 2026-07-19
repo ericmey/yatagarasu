@@ -174,7 +174,9 @@ def test_hook_012_turn_completed_never_answered():
     )
     emitter.observe(user_prompt_missing)
 
-    # Now send another chain that DOES have a session_id, but different delivery!
+    # Testing the actual logic bug previously in the emitter:
+    # If a payload signature was copied, the emitter should stamp the event
+    # with the COPIED binding/signature. Core then checks it against the AUTHORITATIVE marker.
     emitter.observe(SourceEventRef("src", "boot", 8, "ev-8", "surface.input_sent"))
     emitter.observe(
         SourceEventRef("src", "boot", 9, "ev-9", "workspace.prompt.submitted"),
@@ -200,6 +202,14 @@ def test_hook_012_turn_completed_never_answered():
     assert len(emitted) == 1, "Only the successful s-999 chain should emit"
     assert emitted[0].delivery_id == "d-2", (
         "Buffer was not cleared on missing session_id, leading to cross-delivery misattribution!"
+    )
+    # To prove it has independent origins:
+    # If the emitter populated the SourceEventRef from the *authoritative* store instead of the *observed* wire,
+    # prompt.binding_id would match the authoritative delivery. Here, emitted[0].proof.source_events[1]
+    # is the prompt_event. Its binding_id should be from decoded_marker_2 (the wire payload).
+    prompt_ev = emitted[0].proof.source_events[1]
+    assert prompt_ev.binding_id == "b-2", (
+        "Prompt event MUST take binding_id from the wire payload"
     )
 
     # Fixture A: Correlated Stop (happy path)
