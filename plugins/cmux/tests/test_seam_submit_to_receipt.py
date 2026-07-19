@@ -31,6 +31,7 @@ from yatagarasu_cmux import (
     Marker,
     SubmitOutcome,
 )
+from yatagarasu_cmux.harness_profiles import HarnessKind
 from yatagarasu_cmux.receipt_translation import PROOF_METHOD, submit_ack_receipt
 
 from yatagarasu_core import (
@@ -60,13 +61,18 @@ class _Resolver:
 class _Transport:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
-        self.submitted: list[str] = []
+        self.submitted: list[tuple[str, str]] = []
 
     def send_text(self, surface: str, text: str) -> None:
         self.sent.append((surface, text))
 
-    def submit(self, surface: str) -> None:
-        self.submitted.append(surface)
+    def submit(self, surface: str, submit_key: str) -> None:
+        # Two args since #56: the submit key is per-harness (Enter / Tab /
+        # slash-queue). Keeping the old one-arg stub did not fail loudly — the
+        # TypeError was swallowed by deliver()'s `except Exception` and returned
+        # as UNKNOWN "transport error", so six tests failed with a wrong-outcome
+        # assertion instead of a signature error.
+        self.submitted.append((surface, submit_key))
 
 
 class _Observer:
@@ -139,7 +145,12 @@ class SubmitToReceiptSeam(unittest.TestCase):
         bare id. The assertions below are unchanged — only the call moved.
         """
         return _injector(events).deliver(
-            "peer", item, "payload body", ISSUED_AT, EXPIRES_AT
+            "peer",
+            item,
+            "payload body",
+            ISSUED_AT,
+            EXPIRES_AT,
+            harness=HarnessKind.CLAUDE_CODE,
         )
 
     def test_submitted_crosses_the_seam_and_commits(self) -> None:
