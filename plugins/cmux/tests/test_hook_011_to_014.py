@@ -1,6 +1,10 @@
 import pytest
 from yatagarasu_cmux.journal import InjectionJournal, JournalState
 from yatagarasu_cmux.marker import extract, mint
+from yatagarasu_cmux.receipt_emitter import ReceiptEmitter
+
+from yatagarasu_core import Delivery, DeliveryMode, SourceEventRef
+from yatagarasu_core.proofs import MarkerAuthority
 
 
 def test_hook_011_restart_every_tracked_delivery_accountable(tmp_path):
@@ -89,15 +93,80 @@ def test_hook_011_restart_every_tracked_delivery_accountable(tmp_path):
         assert j2.get("d-5").state == JournalState.AMBIGUOUS
 
 
-@pytest.mark.skip(
-    reason="Y-CMUX-012 requires the receipt emitter implementation; see issue #28"
-)
 def test_hook_012_turn_completed_never_answered():
     """
     Y-CMUX-012 — harness.turn_completed -> only processed(completed)
     A bare turn-end does not prove answered / acknowledged / held / declined.
+
+    A Stop event which does not correlate to a specific bound delivery emits nothing.
     """
-    pass
+    emitted = []
+
+    def fake_core_client(receipt) -> None:
+        emitted.append(receipt)
+
+    emitter = ReceiptEmitter(core_client=fake_core_client, provider_id="cmux-provider")
+
+    # Setup core marker
+    auth = MarkerAuthority(b"strict-signing-key")
+    delivery = Delivery("ev-1", "d-1", "a-1", "b-1", "yua", DeliveryMode.SESSION_BOUND)
+    marker = auth.mint(
+        delivery, issued_at="2026-07-18T21:00:00Z", expires_at="2026-07-18T21:05:00Z"
+    )
+    encoded_marker = auth.encode(marker)
+
+    # Fixture C: bare turn-end with no preceding prompt
+    stop_stray = SourceEventRef(
+        "src", "boot", 4, "ev-4", "agent.hook.Stop", session_id="s-123"
+    )
+    emitter.observe(stop_stray)
+    assert len(emitted) == 0, "Stop with no preceding prompt MUST NOT emit a receipt"
+
+    # Fixture B: Stray Stop from an unrelated session
+    input_event = SourceEventRef("src", "boot", 1, "ev-1", "surface.input_sent")
+    prompt_event = SourceEventRef(
+        "src", "boot", 2, "ev-2", "workspace.prompt.submitted"
+    )
+    user_prompt = SourceEventRef(
+        "src", "boot", 3, "ev-3", "agent.hook.UserPromptSubmit", session_id="s-123"
+    )
+
+    emitter.observe(input_event)
+    emitter.observe(prompt_event, payload={"message_preview": encoded_marker})
+    emitter.observe(user_prompt)
+
+    # Now we have an active chain for s-123. Emit a Stop for s-wrong.
+    stop_wrong = SourceEventRef(
+        "src", "boot", 5, "ev-5", "agent.hook.Stop", session_id="s-wrong"
+    )
+    emitter.observe(stop_wrong)
+    assert len(emitted) == 0, (
+        "Stray Stop from an unrelated session MUST NOT emit a receipt"
+    )
+
+    # Fixture A: Correlated Stop (happy path)
+    stop_correct = SourceEventRef(
+        "src", "boot", 6, "ev-6", "agent.hook.Stop", session_id="s-123"
+    )
+    emitter.observe(stop_correct)
+    assert len(emitted) == 1, "Correlated Stop MUST emit exactly one receipt"
+
+    receipt = emitted[0]
+
+    # Assertion 1: evidence class is harness.turn_completed
+    assert receipt.evidence_class == "harness.turn_completed"
+
+    # Assertion 2: disposition is exactly "completed", NEVER answered or acknowledged
+    assert receipt.disposition == "completed"
+
+    # Assertion 3: proof method recorded correctly
+    assert receipt.proof_method == "cmux.event_bus.harness_hook_relay"
+
+    # Assertion 4: exact proof bundle is attached and correlated
+    assert receipt.proof is not None
+    assert receipt.proof.session_id == "s-123"
+    assert len(receipt.proof.source_events) == 4
+    assert receipt.proof.source_events[3] == stop_correct
 
 
 def test_hook_013_signed_marker_forgery_rejected():
