@@ -115,8 +115,8 @@ def pytest_sessionfinish(
     Hooking into pytest_sessionfinish (which runs before
     pytest_terminal_summary) is what converts the floor from a
     cosmetic signal into a CI-enforced constraint. Without this hook,
-    the green checkmark would still pass even when a skip exceeded
-    the floor.
+    the green checkmark would still pass when the skip count diverged
+    from the floor in either direction.
     """
     floor = session.config.getoption("--skip-floor")
     rep = session.config.pluginmanager.getplugin("terminalreporter")
