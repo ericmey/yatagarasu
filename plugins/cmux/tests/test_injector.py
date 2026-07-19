@@ -237,7 +237,7 @@ def test_injector_applies_explicit_harness_profile(harness, prefix, submit_keys)
 
 
 def test_codex_waits_for_tab_to_settle_before_enter() -> None:
-    """SEV-1 reopen: back-to-back keys leave an idle prompt unsubmitted."""
+    """SEV-1 reopen: use the operating margin, not the idle-machine floor."""
     effects: list[tuple[str, object]] = []
 
     class TimedTransport(FakeTransport):
@@ -263,7 +263,7 @@ def test_codex_waits_for_tab_to_settle_before_enter() -> None:
     assert effects == [
         ("text", "surface:timed"),
         ("key", "tab"),
-        ("sleep", 0.1),
+        ("sleep", 0.4),
         ("key", "enter"),
     ]
 

@@ -35,7 +35,12 @@ class BusyEnterBehavior(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class HarnessProfile:
-    """The exact text/key pair that requests a non-interrupting next turn."""
+    """The exact text/key pair that requests a non-interrupting next turn.
+
+    The conditions under which a profile is proven must be the conditions
+    under which it runs, so load-bearing timing belongs in this production
+    contract rather than only in a canary or test harness.
+    """
 
     kind: HarnessKind
     submit_keys: tuple[str, ...]
@@ -62,9 +67,12 @@ _PROFILES = {
         # while idle. Enter submits while idle but steers while busy. Tab then
         # Enter is state-independent: busy Tab consumes the text into the queue
         # and the empty Enter is inert; idle Tab is inert and Enter submits.
+        # 0.1 s was the measured floor on one disposable, lightly loaded seat.
+        # The 0.4 s production margin carries over agent-bridge's empirically
+        # tuned same-substrate settle, which survived weeks across four seats.
         submit_keys=("tab", "enter"),
         busy_enter_behavior=BusyEnterBehavior.STEER,
-        inter_key_delay_s=0.1,
+        inter_key_delay_s=0.4,
     ),
     HarnessKind.HERMES: HarnessProfile(
         kind=HarnessKind.HERMES,
