@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import contextlib
-import dataclasses
 import re
 from collections.abc import Callable
 
@@ -79,14 +78,11 @@ class ReceiptEmitter:
                     )
                     if context:
                         delivery, core_marker = context
-                        # Populate required durable correlation fields onto the SourceEventRef
-                        prompt_event = dataclasses.replace(
-                            self._pending_prompt,
-                            binding_id=self._pending_decoded_marker.binding_id,
-                            marker_signature=self._pending_decoded_marker.signature,
-                        )
-
-                        chain = [self._pending_input, prompt_event, event]
+                        # The prompt correlation fields were produced from the
+                        # observed DerivedEvent. Never replace them from the
+                        # authoritative lookup or core compares a value with
+                        # itself and the guard can no longer fail.
+                        chain = [self._pending_input, self._pending_prompt, event]
                         self._active_chains[event.session_id] = (
                             delivery,
                             core_marker,

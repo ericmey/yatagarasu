@@ -3,10 +3,22 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Protocol
 
-from .event_outbox import CommitDisposition, EventCursor, EventOutbox
+from .event_outbox import CommitDisposition, DerivedEvent, EventCursor, EventOutbox
 from .socket_client import UnixCmuxSocketClient
 from .stream_protocol import EventProjector, StreamAck, StreamProtocolError
+
+
+class ReceiptProducer(Protocol):
+    """Consumes evidence before its cursor is made durable.
+
+    ``observe`` returns only after any emitted receipt is durably accepted or
+    durably queued. A transient sink failure raises, leaving the event
+    replayable because the resident has not advanced its cursor yet.
+    """
+
+    def observe(self, event: DerivedEvent) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,12 +45,14 @@ class EventStreamResident:
         client: UnixCmuxSocketClient,
         outbox: EventOutbox,
         marker_key: bytes,
+        receipt_producer: ReceiptProducer | None = None,
     ) -> None:
         if not source_instance_id:
             raise ValueError("source instance ID must not be empty")
         self.source_instance_id = source_instance_id
         self.client = client
         self.outbox = outbox
+        self.receipt_producer = receipt_producer
         self.projector = EventProjector(
             source_instance_id=source_instance_id, marker_key=marker_key
         )
@@ -108,6 +122,12 @@ class EventStreamResident:
                         raise StreamProtocolError("unexpected CMUX stream frame type")
 
                     event = self.projector.project(frame, expected_boot_id=ack.boot_id)
+                    # Feed the receipt plane before advancing the durable stream
+                    # cursor. If the sink fails, this event remains replayable.
+                    # A receipt uses the source event ID, so replay after a crash
+                    # is classified by core as duplicate rather than a new claim.
+                    if self.receipt_producer is not None:
+                        self.receipt_producer.observe(event)
                     disposition = self.outbox.commit_event(
                         event, permit_boot_change=gap
                     )

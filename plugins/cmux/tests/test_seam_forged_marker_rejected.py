@@ -69,6 +69,7 @@ def _registration() -> ProofMethodRegistration:
 def _run_chain(marker_token_in_prompt: str, delivery: Delivery, authoritative):
     """Drive the emitter through one full chain and return the emitted receipt."""
     emitted: list = []
+    observed_marker = MarkerAuthority.decode(marker_token_in_prompt)
     emitter = ReceiptEmitter(
         core_client=emitted.append,
         provider_id="cmux-provider",
@@ -82,7 +83,15 @@ def _run_chain(marker_token_in_prompt: str, delivery: Delivery, authoritative):
         observed_at=OBSERVED_AT,
     )
     emitter.observe(
-        SourceEventRef(SOURCE_INSTANCE, "boot", 2, "e2", "workspace.prompt.submitted"),
+        SourceEventRef(
+            SOURCE_INSTANCE,
+            "boot",
+            2,
+            "e2",
+            "workspace.prompt.submitted",
+            binding_id=observed_marker.binding_id,
+            marker_signature=observed_marker.signature,
+        ),
         payload={"message_preview": marker_token_in_prompt},
         observed_at=OBSERVED_AT,
     )
