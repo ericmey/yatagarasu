@@ -72,10 +72,25 @@ def submit_ack_receipt(
     """Translate a proven submit into a receipt, or return ``None``.
 
     ``observed_at`` and ``receipt_id`` are parameters rather than values this
-    module invents. A hard-coded timestamp would be read by the reducer as a real
-    observation and used to enforce binding lifetimes and marker validity windows
-    against a time that never happened; a derived receipt id would silently
-    collide across attempts. Both belong to the caller that owns the clock.
+    module invents, and it is worth being exact about why — the first version of
+    this paragraph was not.
+
+    It claimed a hard-coded timestamp would be used to enforce binding lifetimes
+    and marker validity windows. That enforcement is real but it lives in
+    ``_validate_session_receipt`` (``receipts.py:194,215``) and runs only for the
+    session-proof evidence classes. ``transport.submit_ack`` is not one of them.
+    Tama caught the overclaim.
+
+    What ``observed_at`` actually does here: the reducer requires it non-empty
+    (``receipts.py:49``) and stores it, and it is one of the fields compared when
+    deciding whether a resubmitted receipt is the same receipt
+    (``receipts.py:159``). So a constant does not get the receipt rejected — it
+    quietly corrupts the audit record, making every send claim to have been
+    observed at the same instant and rendering genuinely distinct observations
+    indistinguishable. A weaker consequence than the one first claimed, and still
+    a sufficient reason for the caller to own the clock.
+
+    A derived ``receipt_id`` would silently collide across attempts.
 
     ``delivery`` is required because a ``SubmitResult`` knows only its
     ``delivery_id``. Every other correlation field the reducer needs —
