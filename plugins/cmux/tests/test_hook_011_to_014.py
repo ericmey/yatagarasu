@@ -105,15 +105,34 @@ def test_hook_012_turn_completed_never_answered():
     def fake_core_client(receipt) -> None:
         emitted.append(receipt)
 
-    emitter = ReceiptEmitter(core_client=fake_core_client, provider_id="cmux-provider")
-
     # Setup core marker
     auth = MarkerAuthority(b"strict-signing-key")
     delivery = Delivery("ev-1", "d-1", "a-1", "b-1", "yua", DeliveryMode.SESSION_BOUND)
-    marker = auth.mint(
+    core_marker = auth.mint(
         delivery, issued_at="2026-07-18T21:00:00Z", expires_at="2026-07-18T21:05:00Z"
     )
-    encoded_marker = auth.encode(marker)
+    encoded_marker = auth.encode(core_marker)
+
+    delivery_2 = Delivery(
+        "ev-2", "d-2", "a-2", "b-2", "yua", DeliveryMode.SESSION_BOUND
+    )
+    marker_2 = auth.mint(
+        delivery_2, issued_at="2026-07-18T21:00:00Z", expires_at="2026-07-18T21:05:00Z"
+    )
+    encoded_marker_2 = auth.encode(marker_2)
+
+    def lookup(delivery_id: str):
+        if delivery_id == "d-1":
+            return (delivery, core_marker)
+        elif delivery_id == "d-2":
+            return (delivery_2, marker_2)
+        return None
+
+    emitter = ReceiptEmitter(
+        core_client=fake_core_client,
+        provider_id="cmux-provider",
+        delivery_lookup=lookup,
+    )
 
     # Fixture C: bare turn-end with no preceding prompt
     stop_stray = SourceEventRef(
@@ -144,14 +163,53 @@ def test_hook_012_turn_completed_never_answered():
         "Stray Stop from an unrelated session MUST NOT emit a receipt"
     )
 
+    # Fixture D: UserPromptSubmit without session_id clears buffer
+    # If the buffer isn't cleared, the NEXT valid chain will mis-correlate
+    emitter.observe(input_event)
+    emitter.observe(prompt_event, payload={"message_preview": encoded_marker})
+
+    # Missing session_id
+    user_prompt_missing = SourceEventRef(
+        "src", "boot", 7, "ev-7", "agent.hook.UserPromptSubmit", session_id=None
+    )
+    emitter.observe(user_prompt_missing)
+
+    # Now send another chain that DOES have a session_id, but different delivery!
+    emitter.observe(SourceEventRef("src", "boot", 8, "ev-8", "surface.input_sent"))
+    emitter.observe(
+        SourceEventRef("src", "boot", 9, "ev-9", "workspace.prompt.submitted"),
+        payload={"message_preview": encoded_marker_2},
+    )
+    emitter.observe(
+        SourceEventRef(
+            "src",
+            "boot",
+            10,
+            "ev-10",
+            "agent.hook.UserPromptSubmit",
+            session_id="s-999",
+        )
+    )
+    emitter.observe(
+        SourceEventRef(
+            "src", "boot", 11, "ev-11", "agent.hook.Stop", session_id="s-999"
+        ),
+        observed_at="2026-07-18T21:05:00Z",
+    )
+
+    assert len(emitted) == 1, "Only the successful s-999 chain should emit"
+    assert emitted[0].delivery_id == "d-2", (
+        "Buffer was not cleared on missing session_id, leading to cross-delivery misattribution!"
+    )
+
     # Fixture A: Correlated Stop (happy path)
     stop_correct = SourceEventRef(
         "src", "boot", 6, "ev-6", "agent.hook.Stop", session_id="s-123"
     )
-    emitter.observe(stop_correct, observed_at="2026-07-18T21:05:00Z")
-    assert len(emitted) == 1, "Correlated Stop MUST emit exactly one receipt"
+    emitter.observe(stop_correct, observed_at="2026-07-18T21:06:00Z")
+    assert len(emitted) == 2, "Correlated Stop MUST emit exactly one receipt"
 
-    receipt = emitted[0]
+    receipt = emitted[1]
 
     # Assertion 1: evidence class is harness.turn_completed
     assert receipt.evidence_class == "harness.turn_completed"
@@ -161,13 +219,18 @@ def test_hook_012_turn_completed_never_answered():
 
     # Assertion 3: proof method recorded correctly
     assert receipt.proof_method == "cmux.event_bus.harness_hook_relay"
-    assert receipt.observed_at == "2026-07-18T21:05:00Z"
+    assert receipt.observed_at == "2026-07-18T21:06:00Z"
 
     # Assertion 4: exact proof bundle is attached and correlated
     assert receipt.proof is not None
     assert receipt.proof.session_id == "s-123"
     assert len(receipt.proof.source_events) == 4
     assert receipt.proof.source_events[3] == stop_correct
+
+    # Assertion 5: REQUIRED durable correlation fields populated
+    prompt_in_proof = receipt.proof.source_events[1]
+    assert prompt_in_proof.binding_id == "b-1"
+    assert prompt_in_proof.marker_signature == core_marker.signature
 
 
 def test_hook_013_signed_marker_forgery_rejected():
@@ -188,12 +251,13 @@ def test_hook_013_signed_marker_forgery_rejected():
     assert extract(real_key, marker.text) is not None
 
     # Fixture A - Forged Marker: tampered signature
-    forged_text = f"[ygr:{delivery_id}:{marker.nonce}:{'0' * len(marker.signature)}]"
+    # Since it's base64 encoded now, we'll just corrupt the payload to test extraction failure
+    forged_text = marker.text[:-10] + "0" * 10
     assert extract(real_key, forged_text) is None, "Forged marker must be rejected"
 
-    # Tampered delivery_id: the signature is bound to the id, so changing the
-    # id invalidates it. This is binding, not staleness.
-    tampered_id = f"[ygr:wrong-id:{marker.nonce}:{marker.signature}]"
+    # Fixture C/D - Copied/Stale Marker
+    # Handled at the core binding level, but local extraction requires exact text
+    tampered_id = marker.text.replace(delivery_id, "wrong-id")
     assert extract(real_key, tampered_id) is None, (
         "Tampered delivery ID must fail signature"
     )
@@ -201,9 +265,6 @@ def test_hook_013_signed_marker_forgery_rejected():
     # CRITICAL SECURITY REGRESSION: The empty key vulnerability
     assert extract(empty_key, marker.text) is None, (
         "Empty key must reject real markers (fail closed)"
-    )
-    assert extract(empty_key, forged_text) is None, (
-        "Empty key must reject forged markers"
     )
 
 

@@ -113,6 +113,7 @@ class Injector:
                 f"unresolved: {exc}",
             )
 
+        # Marker injection format updated to conform to core (YGR1 base64 format)
         text = f"{marker.text} {body}"
 
         # From here the local effect may fire. Record intent BEFORE touching the

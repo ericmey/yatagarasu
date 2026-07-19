@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import re
 from collections.abc import Callable
 
 from yatagarasu_core import (
+    Delivery,
     DeliveryMarker,
     Disposition,
     EvidenceClass,
@@ -12,7 +14,7 @@ from yatagarasu_core import (
     SessionProof,
     SourceEventRef,
 )
-from yatagarasu_core.proofs import MarkerAuthority, MarkerError
+from yatagarasu_core.proofs import MarkerAuthority
 
 _YGR1_RE = re.compile(r"(ygr1\.[A-Za-z0-9_-]+)")
 
@@ -27,17 +29,21 @@ class ReceiptEmitter:
         self,
         core_client: Callable[[Receipt], None],
         provider_id: str,
+        delivery_lookup: Callable[[str], tuple[Delivery, DeliveryMarker] | None],
     ) -> None:
         self._core = core_client
         self._provider_id = provider_id
+        self._delivery_lookup = delivery_lookup
 
-        # session_id -> (marker, [input_sent, prompt_submitted, user_prompt_submit])
-        self._active_chains: dict[str, tuple[DeliveryMarker, list[SourceEventRef]]] = {}
+        # session_id -> (Delivery, DeliveryMarker, [input_sent, prompt_submitted, user_prompt_submit])
+        self._active_chains: dict[
+            str, tuple[Delivery, DeliveryMarker, list[SourceEventRef]]
+        ] = {}
 
         # Ephemeral buffer for the current turn being built
         self._pending_input: SourceEventRef | None = None
         self._pending_prompt: SourceEventRef | None = None
-        self._pending_marker: DeliveryMarker | None = None
+        self._pending_delivery_id: str | None = None
 
     def observe(
         self, event: SourceEventRef, payload: dict | None = None, observed_at: str = ""
@@ -53,21 +59,40 @@ class ReceiptEmitter:
             if payload and "message_preview" in payload:
                 match = _YGR1_RE.search(payload["message_preview"])
                 if match:
-                    with contextlib.suppress(MarkerError):
-                        self._pending_marker = MarkerAuthority.decode(match.group(1))
-
+                    with contextlib.suppress(Exception):
+                        decoded = MarkerAuthority.decode(match.group(1))
+                        self._pending_delivery_id = decoded.delivery_id
         elif name == "agent.hook.UserPromptSubmit":
-            if not event.session_id:
-                return
+            try:
+                if not event.session_id:
+                    return
 
-            if self._pending_input and self._pending_prompt and self._pending_marker:
-                chain = [self._pending_input, self._pending_prompt, event]
-                self._active_chains[event.session_id] = (self._pending_marker, chain)
+                if (
+                    self._pending_input
+                    and self._pending_prompt
+                    and self._pending_delivery_id
+                ):
+                    context = self._delivery_lookup(self._pending_delivery_id)
+                    if context:
+                        delivery, core_marker = context
+                        # Populate required durable correlation fields onto the SourceEventRef
+                        prompt_event = dataclasses.replace(
+                            self._pending_prompt,
+                            binding_id=delivery.binding_id,
+                            marker_signature=core_marker.signature,
+                        )
 
-            # Clear ephemeral buffer
-            self._pending_input = None
-            self._pending_prompt = None
-            self._pending_marker = None
+                        chain = [self._pending_input, prompt_event, event]
+                        self._active_chains[event.session_id] = (
+                            delivery,
+                            core_marker,
+                            chain,
+                        )
+            finally:
+                # Clear ephemeral buffer on every exit path
+                self._pending_input = None
+                self._pending_prompt = None
+                self._pending_delivery_id = None
 
         elif name == "agent.hook.Stop":
             if not event.session_id:
@@ -78,21 +103,21 @@ class ReceiptEmitter:
                 # Uncorrelated Stop: emit nothing.
                 return
 
-            marker, previous_events = chain_data
+            delivery, core_marker, previous_events = chain_data
             source_events = tuple([*previous_events, event])
 
             proof = SessionProof(
                 session_id=event.session_id,
-                marker=marker,
+                marker=core_marker,
                 source_events=source_events,
             )
 
             receipt = Receipt(
                 receipt_id=f"rec-{event.source_event_id}",
-                event_id=marker.event_id,
-                delivery_id=marker.delivery_id,
-                attempt_id=marker.attempt_id,
-                binding_id=marker.binding_id,
+                event_id=delivery.event_id,
+                delivery_id=delivery.delivery_id,
+                attempt_id=delivery.attempt_id,
+                binding_id=delivery.binding_id,
                 evidence_provider_id=self._provider_id,
                 evidence_class=EvidenceClass.HARNESS_TURN_COMPLETED,
                 proof_method="cmux.event_bus.harness_hook_relay",
