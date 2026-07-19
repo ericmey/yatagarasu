@@ -12,7 +12,13 @@ without silently choosing #59's normalization policy.
 from __future__ import annotations
 
 import pytest
-from yatagarasu_cmux import EventOutbox, EventStreamResident, UnixCmuxSocketClient
+from yatagarasu_cmux import (
+    DerivedEventReceiptProducer,
+    EventOutbox,
+    EventProjector,
+    EventStreamResident,
+    UnixCmuxSocketClient,
+)
 from yatagarasu_cmux.runtime import RuntimeConfig
 from yatagarasu_cmux.supervisor import Supervisor
 
@@ -292,3 +298,307 @@ def test_restart_rebuilds_an_active_chain_before_stop_arrives(
         "agent.hook.UserPromptSubmit",
         "agent.hook.Stop",
     ]
+
+
+def _captured_duplicate_frames(wire_token: str) -> list[dict[str, object]]:
+    """Literal eight-event capture from the live Codex seat in issue #59."""
+    preview = {"message_preview": f"{wire_token} payload omitted"}
+    prompt_hook = {
+        "session_id": SESSION_ID,
+        "hook_event_name": "UserPromptSubmit",
+    }
+    frames = [
+        event("boot-live-dup", 25573, name="surface.input_sent"),
+        event(
+            "boot-live-dup",
+            25588,
+            name="workspace.prompt.submitted",
+            payload=preview,
+        ),
+        event(
+            "boot-live-dup",
+            25590,
+            name="agent.hook.UserPromptSubmit",
+            payload=prompt_hook,
+        ),
+        event(
+            "boot-live-dup",
+            25592,
+            name="workspace.prompt.submitted",
+            payload=preview,
+        ),
+        event(
+            "boot-live-dup",
+            25593,
+            name="agent.hook.UserPromptSubmit",
+            payload=prompt_hook,
+        ),
+        event(
+            "boot-live-dup",
+            25595,
+            name="workspace.prompt.submitted",
+            payload=preview,
+        ),
+        event(
+            "boot-live-dup",
+            25596,
+            name="agent.hook.UserPromptSubmit",
+            payload=prompt_hook,
+        ),
+        event(
+            "boot-live-dup",
+            25608,
+            name="agent.hook.Stop",
+            payload={"session_id": SESSION_ID, "hook_event_name": "Stop"},
+        ),
+    ]
+    for frame in frames:
+        frame["occurred_at"] = OBSERVED_AT
+    return frames
+
+
+def test_literal_duplicate_capture_is_normalized_before_emission(delivery) -> None:
+    """SEV-1 reopen: raw duplicate callbacks reach the receipt state machine."""
+    authority = MarkerAuthority(REAL_KEY)
+    marker = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
+    projector = EventProjector(
+        source_instance_id=SOURCE_INSTANCE,
+        marker_key=b"unused-projection-key",
+    )
+    observed: list[tuple[str, int]] = []
+
+    class RecordingEmitter:
+        def observe(
+            self, source_event, payload=None, *, observed_at, workspace_id=None
+        ):
+            observed.append((source_event.event_name, source_event.seq))
+
+    producer = DerivedEventReceiptProducer(
+        core_client=lambda receipt: None,
+        provider_id=PROVIDER_ID,
+        delivery_lookup=lambda delivery_id: (delivery, marker),
+    )
+    producer._emitter = RecordingEmitter()  # type: ignore[assignment]
+
+    for frame in _captured_duplicate_frames(authority.encode(marker)):
+        producer.observe(projector.project(frame, expected_boot_id="boot-live-dup"))
+
+    assert observed == [
+        ("surface.input_sent", 25573),
+        ("workspace.prompt.submitted", 25588),
+        ("agent.hook.UserPromptSubmit", 25590),
+        ("agent.hook.Stop", 25608),
+    ]
+
+
+def test_literal_duplicate_capture_emits_one_valid_receipt(tmp_path, delivery) -> None:
+    """The exact captured sequence must validate without a synthetic fixture."""
+    authority = MarkerAuthority(REAL_KEY)
+    marker = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
+    source_events = _captured_duplicate_frames(authority.encode(marker))
+    socket_path = short_socket_path(tmp_path, "literal-receipt-capture")
+    config = RuntimeConfig(
+        socket_path=socket_path,
+        state_dir=tmp_path / "literal-state",
+        password=None,
+        source_instance_id=SOURCE_INSTANCE,
+    )
+    config.state_dir.mkdir()
+    emitted = []
+    supervisor = Supervisor.with_receipts(
+        config,
+        core_client=emitted.append,
+        provider_id=PROVIDER_ID,
+        delivery_lookup=lambda delivery_id: (
+            (delivery, marker) if delivery_id == delivery.delivery_id else None
+        ),
+    )
+    frames = [
+        ack(
+            "boot-live-dup",
+            replay_count=0,
+            gap=False,
+            requested_after_seq=None,
+            latest_seq=25608,
+        ),
+        *source_events,
+    ]
+
+    with CmuxSocketHarness(socket_path, [frames]):
+        run = supervisor.run_once()
+
+    assert run.inserted_event_count == 8
+    assert len(emitted) == 1
+    receipt = emitted[0]
+    assert receipt.proof is not None
+    assert [item.seq for item in receipt.proof.source_events] == [
+        25573,
+        25588,
+        25590,
+        25608,
+    ]
+    assert (
+        validate_session_proof(
+            proof=receipt.proof,
+            delivery=delivery,
+            evidence_class=receipt.evidence_class,
+            registration=_registration(),
+            marker_authority=authority,
+            observed_at=receipt.observed_at,
+        )
+        is None
+    )
+
+
+def test_literal_duplicate_capture_preserves_broken_signature(
+    tmp_path, delivery
+) -> None:
+    """Normalization must never replace observed marker evidence from core."""
+    authority = MarkerAuthority(REAL_KEY)
+    attacker = MarkerAuthority(ATTACKER_KEY)
+    authoritative = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
+    forged = attacker.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
+    source_events = _captured_duplicate_frames(attacker.encode(forged))
+    socket_path = short_socket_path(tmp_path, "literal-forged-capture")
+    config = RuntimeConfig(
+        socket_path=socket_path,
+        state_dir=tmp_path / "literal-forged-state",
+        password=None,
+        source_instance_id=SOURCE_INSTANCE,
+    )
+    config.state_dir.mkdir()
+    emitted = []
+    supervisor = Supervisor.with_receipts(
+        config,
+        core_client=emitted.append,
+        provider_id=PROVIDER_ID,
+        delivery_lookup=lambda delivery_id: (
+            (delivery, authoritative) if delivery_id == delivery.delivery_id else None
+        ),
+    )
+    frames = [
+        ack(
+            "boot-live-dup",
+            replay_count=0,
+            gap=False,
+            requested_after_seq=None,
+            latest_seq=25608,
+        ),
+        *source_events,
+    ]
+
+    with CmuxSocketHarness(socket_path, [frames]):
+        supervisor.run_once()
+
+    assert len(emitted) == 1
+    receipt = emitted[0]
+    assert receipt.proof is not None
+    assert receipt.proof.source_events[1].marker_signature == forged.signature
+    assert (
+        validate_session_proof(
+            proof=receipt.proof,
+            delivery=delivery,
+            evidence_class=receipt.evidence_class,
+            registration=_registration(),
+            marker_authority=authority,
+            observed_at=receipt.observed_at,
+        )
+        == "prompt_marker_binding_mismatch"
+    )
+
+
+def test_interleaved_workspaces_keep_independent_receipt_buffers(tmp_path) -> None:
+    """SEV-1 reopen: one workspace overwrites another workspace proof chain."""
+    authority = MarkerAuthority(REAL_KEY)
+    delivery_a = Delivery(
+        "event-a",
+        "delivery-a",
+        "attempt-a",
+        "binding-a",
+        "yua",
+        DeliveryMode.SESSION_BOUND,
+    )
+    delivery_b = Delivery(
+        "event-b",
+        "delivery-b",
+        "attempt-b",
+        "binding-b",
+        "aoi",
+        DeliveryMode.SESSION_BOUND,
+    )
+    marker_a = authority.mint(delivery_a, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
+    marker_b = authority.mint(delivery_b, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
+
+    def wire(seq, name, workspace, *, payload=None):
+        frame = event("boot-interleaved", seq, name=name, payload=payload)
+        frame["workspace_id"] = workspace
+        frame["occurred_at"] = OBSERVED_AT
+        return frame
+
+    source_events = [
+        wire(1, "surface.input_sent", "workspace-a"),
+        wire(2, "surface.input_sent", "workspace-b"),
+        wire(
+            3,
+            "workspace.prompt.submitted",
+            "workspace-a",
+            payload={"message_preview": authority.encode(marker_a)},
+        ),
+        wire(
+            4,
+            "workspace.prompt.submitted",
+            "workspace-b",
+            payload={"message_preview": authority.encode(marker_b)},
+        ),
+        wire(
+            5,
+            "agent.hook.UserPromptSubmit",
+            "workspace-a",
+            payload={"session_id": "session-a"},
+        ),
+        wire(
+            6,
+            "agent.hook.UserPromptSubmit",
+            "workspace-b",
+            payload={"session_id": "session-b"},
+        ),
+        wire(7, "agent.hook.Stop", "workspace-a", payload={"session_id": "session-a"}),
+        wire(8, "agent.hook.Stop", "workspace-b", payload={"session_id": "session-b"}),
+    ]
+    socket_path = short_socket_path(tmp_path, "interleaved-receipts")
+    config = RuntimeConfig(
+        socket_path=socket_path,
+        state_dir=tmp_path / "interleaved-state",
+        password=None,
+        source_instance_id=SOURCE_INSTANCE,
+    )
+    config.state_dir.mkdir()
+    emitted = []
+    deliveries = {
+        delivery_a.delivery_id: (delivery_a, marker_a),
+        delivery_b.delivery_id: (delivery_b, marker_b),
+    }
+    supervisor = Supervisor.with_receipts(
+        config,
+        core_client=emitted.append,
+        provider_id=PROVIDER_ID,
+        delivery_lookup=deliveries.get,
+    )
+    frames = [
+        ack(
+            "boot-interleaved",
+            replay_count=0,
+            gap=False,
+            requested_after_seq=None,
+            latest_seq=8,
+        ),
+        *source_events,
+    ]
+
+    with CmuxSocketHarness(socket_path, [frames]):
+        supervisor.run_once()
+
+    assert {receipt.delivery_id for receipt in emitted} == {
+        delivery_a.delivery_id,
+        delivery_b.delivery_id,
+    }

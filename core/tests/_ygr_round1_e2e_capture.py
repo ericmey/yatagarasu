@@ -168,29 +168,6 @@ def make_binding() -> SessionBinding:
     )
 
 
-def to_source_event_refs(events: list[dict[str, Any]]) -> tuple[SourceEventRef, ...]:
-    """Convert the literal JSONL events into SourceEventRef instances.
-
-    This is the load-bearing translation: each event becomes a
-    SourceEventRef with the literal seq/source_event_id/event_name
-    from the capture. Real null session_ids / surface_ids are preserved
-    as None. The marker_present flag on the prompt.submitted events
-    becomes binding_id + marker_signature on the SourceEventRef, with
-    the marker_signature set to the SIGNATURE the deduped chain's
-    marker carries (the bounded preview in the literal capture is
-    informational; the validator cross-checks the full marker's
-    signature, which the test passes via the SourceEventRef's
-    marker_signature field).
-    """
-    raise NotImplementedError(
-        "to_source_event_refs is the seam that the dedup-to-first "
-        "normalizer (Yua's #46 / #59) implements. Until that lands, "
-        "this fixture exposes the raw 8 events and the synthetic-but-"
-        "consistent marker, but does not assert anything that would "
-        "require the normalizer to exist."
-    )
-
-
 def dedup_to_first(
     raw_events: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:

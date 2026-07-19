@@ -43,7 +43,7 @@ from _ygr_round1_e2e_capture import (
     make_registration,
 )
 
-from yatagarasu_core import MarkerAuthority
+from yatagarasu_core import EvidenceClass, MarkerAuthority
 from yatagarasu_core.proofs import validate_session_proof
 
 KEY = b"ygr-round1-e2e-fixture-key"
@@ -104,9 +104,7 @@ def test_deduped_chain_validates_against_session_proof() -> None:
     rejection = validate_session_proof(
         proof=proof,
         delivery=delivery,
-        evidence_class=__import__(
-            "yatagarasu_core"
-        ).EvidenceClass.HARNESS_TURN_COMPLETED,
+        evidence_class=EvidenceClass.HARNESS_TURN_COMPLETED,
         registration=make_registration(),
         marker_authority=authority,
         observed_at="2026-07-19T16:20:00Z",
@@ -142,9 +140,7 @@ def test_tampered_marker_signature_returns_prompt_marker_binding_mismatch() -> N
     rejection = validate_session_proof(
         proof=proof,
         delivery=delivery,
-        evidence_class=__import__(
-            "yatagarasu_core"
-        ).EvidenceClass.HARNESS_TURN_COMPLETED,
+        evidence_class=EvidenceClass.HARNESS_TURN_COMPLETED,
         registration=make_registration(),
         marker_authority=authority,
         observed_at="2026-07-19T16:20:00Z",
@@ -177,9 +173,7 @@ def test_dropping_stop_event_breaks_chain_shape() -> None:
     rejection = validate_session_proof(
         proof=proof,
         delivery=delivery,
-        evidence_class=__import__(
-            "yatagarasu_core"
-        ).EvidenceClass.HARNESS_TURN_COMPLETED,
+        evidence_class=EvidenceClass.HARNESS_TURN_COMPLETED,
         registration=make_registration(),
         marker_authority=authority,
         observed_at="2026-07-19T16:20:00Z",
@@ -281,9 +275,7 @@ def test_swapping_event_order_breaks_source_event_chain_out_of_order() -> None:
     rejection = validate_session_proof(
         proof=proof,
         delivery=delivery,
-        evidence_class=__import__(
-            "yatagarasu_core"
-        ).EvidenceClass.HARNESS_TURN_COMPLETED,
+        evidence_class=EvidenceClass.HARNESS_TURN_COMPLETED,
         registration=make_registration(),
         marker_authority=authority,
         observed_at="2026-07-19T16:20:00Z",
