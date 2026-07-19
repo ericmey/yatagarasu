@@ -150,9 +150,13 @@ def test_hook_012_turn_completed_never_answered():
         "src", "boot", 3, "ev-3", "agent.hook.UserPromptSubmit", session_id="s-123"
     )
 
-    emitter.observe(input_event)
-    emitter.observe(prompt_event, payload={"message_preview": encoded_marker})
-    emitter.observe(user_prompt)
+    emitter.observe(input_event, observed_at="2026-07-18T21:05:00Z")
+    emitter.observe(
+        prompt_event,
+        payload={"message_preview": encoded_marker},
+        observed_at="2026-07-18T21:05:00Z",
+    )
+    emitter.observe(user_prompt, observed_at="2026-07-18T21:05:00Z")
 
     # Now we have an active chain for s-123. Emit a Stop for s-wrong.
     stop_wrong = SourceEventRef(
@@ -165,22 +169,30 @@ def test_hook_012_turn_completed_never_answered():
 
     # Fixture D: UserPromptSubmit without session_id clears buffer
     # If the buffer isn't cleared, the NEXT valid chain will mis-correlate
-    emitter.observe(input_event)
-    emitter.observe(prompt_event, payload={"message_preview": encoded_marker})
+    emitter.observe(input_event, observed_at="2026-07-18T21:05:00Z")
+    emitter.observe(
+        prompt_event,
+        payload={"message_preview": encoded_marker},
+        observed_at="2026-07-18T21:05:00Z",
+    )
 
     # Missing session_id
     user_prompt_missing = SourceEventRef(
         "src", "boot", 7, "ev-7", "agent.hook.UserPromptSubmit", session_id=None
     )
-    emitter.observe(user_prompt_missing)
+    emitter.observe(user_prompt_missing, observed_at="2026-07-18T21:05:00Z")
 
     # Testing the actual logic bug previously in the emitter:
     # If a payload signature was copied, the emitter should stamp the event
     # with the COPIED binding/signature. Core then checks it against the AUTHORITATIVE marker.
-    emitter.observe(SourceEventRef("src", "boot", 8, "ev-8", "surface.input_sent"))
+    emitter.observe(
+        SourceEventRef("src", "boot", 8, "ev-8", "surface.input_sent"),
+        observed_at="2026-07-18T21:05:00Z",
+    )
     emitter.observe(
         SourceEventRef("src", "boot", 9, "ev-9", "workspace.prompt.submitted"),
         payload={"message_preview": encoded_marker_2},
+        observed_at="2026-07-18T21:05:00Z",
     )
     emitter.observe(
         SourceEventRef(
@@ -190,7 +202,8 @@ def test_hook_012_turn_completed_never_answered():
             "ev-10",
             "agent.hook.UserPromptSubmit",
             session_id="s-999",
-        )
+        ),
+        observed_at="2026-07-18T21:05:00Z",
     )
     emitter.observe(
         SourceEventRef(
@@ -252,7 +265,6 @@ def test_hook_013_signed_marker_forgery_rejected():
     and a seen-marker store. Do not read this test as proving them.
     """
     real_key = b"strict-signing-key"
-    empty_key = b""
     delivery = Delivery(
         "ev-123", "d-123", "a-123", "b-123", "yua", DeliveryMode.SESSION_BOUND
     )
@@ -278,9 +290,9 @@ def test_hook_013_signed_marker_forgery_rejected():
     extracted = extract(None, tampered_id)
     assert extracted is None, "Tampered marker should fail decoding"
 
-    assert extract(empty_key, encoded_marker) is not None, (
-        "Empty key validation is now core's job, extraction just parses"
-    )
+    # Empty-key misconfiguration is handled by MarkerAuthority construction in core,
+    # not by extraction parsing. See `test_empty_key_never_authenticates_a_marker`
+    # in `test_injector.py` for the security boundary test.
 
 
 @pytest.mark.skip(

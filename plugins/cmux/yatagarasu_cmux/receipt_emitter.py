@@ -47,7 +47,7 @@ class ReceiptEmitter:
         self._pending_decoded_marker: DeliveryMarker | None = None
 
     def observe(
-        self, event: SourceEventRef, payload: dict | None = None, observed_at: str = ""
+        self, event: SourceEventRef, payload: dict | None = None, *, observed_at: str
     ) -> None:
         """Process an event from the cmux event bus."""
         name = event.event_name
@@ -115,6 +115,9 @@ class ReceiptEmitter:
                 marker=core_marker,
                 source_events=source_events,
             )
+
+            if not delivery.binding_id:
+                return
 
             receipt = Receipt(
                 receipt_id=f"rec-{event.source_event_id}",
