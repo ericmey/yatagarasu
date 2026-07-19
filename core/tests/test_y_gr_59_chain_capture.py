@@ -6,7 +6,7 @@ one turn (1 input_sent, 3 prompt.submitted all carrying the SAME marker,
 3 UserPromptSubmit, 1 Stop). The normalizer collapses 8 -> 4.
 
 This test takes the literal 8-event capture from
-``core/tests/fixtures/ygr_round1_e2e_20260719_capture.jsonl`` and asserts
+``core/tests/ygr_round1_e2e_20260719_capture.jsonl`` and asserts
 the production normalizer + validate_session_proof round-trip is wired
 correctly:
 
@@ -29,7 +29,7 @@ Acceptance shape (per the seam framework):
   - End-to-end: the test runs the production path; no hand-built
     4-event chain, no reconstruction.
 
-The dedup helper in ``ygr_round1_e2e_capture.py`` mirrors Yua's
+The dedup helper in ``_ygr_round1_e2e_capture.py`` mirrors Yua's
 production normalizer for now. Once the production normalizer ships
 in #46/#59, the test should call the production path directly rather
 than the local helper.

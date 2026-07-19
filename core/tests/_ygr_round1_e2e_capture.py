@@ -1,6 +1,6 @@
 """The literal CMUX event capture from ygr-round1-e2e-20260719, as fixtures.
 
-The capture file `core/tests/fixtures/ygr_round1_e2e_20260719_capture.jsonl`
+The capture file `core/tests/ygr_round1_e2e_20260719_capture.jsonl`
 is the verbatim 8-event sequence Yua captured from a live disposable Codex
 seat on 2026-07-19. It is preserved here as JSONL so future tests can
 read it byte-for-byte without re-deriving anything by hand.

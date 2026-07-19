@@ -14,6 +14,12 @@ from .event_outbox import (
     SnapshotBaseline,
     default_event_outbox_path,
 )
+from .harness_profiles import (
+    BusyEnterBehavior,
+    HarnessKind,
+    HarnessProfile,
+    profile_for,
+)
 from .injector import (
     EVENT_INPUT_SENT,
     EVENT_PROMPT_SUBMITTED,
@@ -33,8 +39,14 @@ from .notifications import (
     validate_hook_effects,
 )
 from .outcome import SubmitOutcome, SubmitResult
+from .receipt_producer import (
+    DerivedEventReceiptProducer,
+    ReceiptProducerError,
+    source_event_from_derived,
+)
 from .resident import EventStreamResident, ResidentRun
 from .socket_client import SNAPSHOT_METHODS, UnixCmuxSocketClient
+from .socket_transport import CmuxSocketTransport
 from .stream_protocol import EventProjector, StreamAck, StreamProtocolError
 
 __all__ = [
@@ -44,12 +56,17 @@ __all__ = [
     "REQUIRED_EVENTS",
     "SNAPSHOT_METHODS",
     "BusObserver",
+    "BusyEnterBehavior",
+    "CmuxSocketTransport",
     "CommitDisposition",
     "DerivedEvent",
+    "DerivedEventReceiptProducer",
     "EventCursor",
     "EventOutbox",
     "EventProjector",
     "EventStreamResident",
+    "HarnessKind",
+    "HarnessProfile",
     "Injector",
     "Marker",
     "MarkerError",
@@ -57,6 +74,7 @@ __all__ = [
     "NotificationLifecycleError",
     "NotificationRecord",
     "OutboxError",
+    "ReceiptProducerError",
     "ResidentRun",
     "ResolutionError",
     "Resolver",
@@ -70,6 +88,8 @@ __all__ = [
     "default_event_outbox_path",
     "extract",
     "mint",
+    "profile_for",
     "redact",
+    "source_event_from_derived",
     "validate_hook_effects",
 ]

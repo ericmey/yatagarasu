@@ -41,12 +41,15 @@ from collections.abc import Iterable
 from yatagarasu_cmux import (
     EVENT_INPUT_SENT,
     EVENT_PROMPT_SUBMITTED,
+    HarnessKind,
     Injector,
-    Marker,
     SubmitOutcome,
     extract,
 )
 from yatagarasu_cmux.outcome import SubmitResult
+
+from yatagarasu_core import Delivery, DeliveryMode
+from yatagarasu_core.proofs import MarkerAuthority
 
 SIGNING_KEY = b"acceptance-only-signing-key"
 
@@ -59,13 +62,13 @@ class _Resolver:
 class _Transport:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
-        self.submitted: list[str] = []
+        self.submitted: list[tuple[str, str]] = []
 
     def send_text(self, surface: str, text: str) -> None:
         self.sent.append((surface, text))
 
-    def submit(self, surface: str) -> None:
-        self.submitted.append(surface)
+    def submit(self, surface: str, key: str) -> None:
+        self.submitted.append((surface, key))
 
 
 class _Observer:
@@ -82,7 +85,7 @@ class _Observer:
     def __init__(self, events: list[str]) -> None:
         self._events = list(events)
 
-    def observe(self, marker: Marker, timeout_s: float) -> Iterable[str]:
+    def observe(self, marker, timeout_s: float) -> Iterable[str]:
         while self._events:
             yield self._events.pop(0)
 
@@ -92,8 +95,29 @@ def _build_injector(events: list[str], transport: _Transport | None = None) -> I
         resolver=_Resolver(),
         transport=transport or _Transport(),
         observer=_Observer(events),
-        signing_key=SIGNING_KEY,
+        marker_authority=MarkerAuthority(SIGNING_KEY),
         submit_timeout_s=0.05,
+    )
+
+
+def _deliver(
+    inj: Injector,
+    identity: str,
+    delivery_id: str,
+    body: str,
+    *,
+    harness: HarnessKind | str = HarnessKind.CLAUDE_CODE,
+):
+    delivery = Delivery(
+        "ev", delivery_id, "attempt", "b-1", identity, DeliveryMode.SESSION_BOUND
+    )
+    return inj.deliver(
+        identity,
+        delivery,
+        body,
+        "2026-07-19T20:00:00Z",
+        "2026-07-19T20:05:00Z",
+        harness=harness,
     )
 
 
@@ -107,7 +131,7 @@ def test_y_cmux_002_input_sent_without_submit_is_unknown_holds_no_requeue() -> N
     """
     inj = _build_injector(events=[EVENT_INPUT_SENT])
 
-    result: SubmitResult = inj.deliver("peer", "d-001", "hello world")
+    result: SubmitResult = _deliver(inj, "peer", "d-001", "hello world")
 
     # Tracer contract assertions:
     assert result.outcome is SubmitOutcome.UNKNOWN, (
@@ -138,7 +162,7 @@ def test_y_cmux_002_no_events_at_all_is_clean_negative_may_requeue() -> None:
     """
     inj = _build_injector(events=[])
 
-    result = inj.deliver("peer", "d-002", "hello world")
+    result = _deliver(inj, "peer", "d-002", "hello world")
 
     assert result.outcome is SubmitOutcome.NOT_SUBMITTED, (
         f"outcome must be NOT_SUBMITTED when nothing was observed, got {result.outcome!r}."
@@ -161,7 +185,7 @@ def test_y_cmux_002_both_events_prove_submission() -> None:
     """
     inj = _build_injector(events=[EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED])
 
-    result = inj.deliver("peer", "d-003", "hello world")
+    result = _deliver(inj, "peer", "d-003", "hello world")
 
     assert result.outcome is SubmitOutcome.SUBMITTED
     assert result.is_proven
@@ -183,11 +207,11 @@ def test_y_cmux_002_marker_is_recoverable_from_sent_text_on_unknown() -> None:
         resolver=_Resolver(),
         transport=transport,
         observer=_Observer([EVENT_INPUT_SENT]),
-        signing_key=SIGNING_KEY,
+        marker_authority=MarkerAuthority(SIGNING_KEY),
         submit_timeout_s=0.05,
     )
 
-    result = inj.deliver("peer", "d-004", "payload body")
+    result = _deliver(inj, "peer", "d-004", "payload body")
 
     assert result.outcome is SubmitOutcome.UNKNOWN
     assert transport.sent, (
@@ -199,7 +223,7 @@ def test_y_cmux_002_marker_is_recoverable_from_sent_text_on_unknown() -> None:
     # mint returns a new nonce/signature each call, so a second mint would
     # never match the embedded one). The whole point of the marker is that
     # it's recoverable from the host event payload.
-    recovered = extract(SIGNING_KEY, sent_text)
+    recovered = extract(None, sent_text)
     assert recovered is not None, (
         f"marker must be extractable from sent text {sent_text!r}; "
         "the journal layer relies on this for crash-window reconciliation."
@@ -227,11 +251,11 @@ def test_y_cmux_002_observer_consumes_event_chain_on_first_call() -> None:
         resolver=_Resolver(),
         transport=transport,
         observer=observer,
-        signing_key=SIGNING_KEY,
+        marker_authority=MarkerAuthority(SIGNING_KEY),
         submit_timeout_s=0.05,
     )
 
-    first = inj.deliver("peer", "d-005", "first body")
+    first = _deliver(inj, "peer", "d-005", "first body")
     assert first.outcome is SubmitOutcome.SUBMITTED, (
         "first call must see both events; the chain is still populated"
     )
@@ -241,7 +265,7 @@ def test_y_cmux_002_observer_consumes_event_chain_on_first_call() -> None:
     transport.sent.clear()
     transport.submitted.clear()
 
-    second = inj.deliver("peer", "d-006", "second body")
+    second = _deliver(inj, "peer", "d-006", "second body")
     # The observer's event chain has been consumed; the second call sees
     # an empty list, the injector classifies as NOT_SUBMITTED.
     assert second.outcome is SubmitOutcome.NOT_SUBMITTED, (

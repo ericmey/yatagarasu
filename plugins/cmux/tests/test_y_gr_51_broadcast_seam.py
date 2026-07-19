@@ -307,22 +307,32 @@ def test_y_gr_51_duplicate_recipient_in_roster_is_rejected(_tmp_seam: Path) -> N
                 EvidenceClass.HARNESS_PROMPT_ACCEPTED,
             },
         )
-        for index, recipient_id in enumerate(set(recipients_with_dup)):
+        # dict.fromkeys, not set(): set iteration order is unspecified, so the
+        # `index` each recipient received — and therefore the binding data —
+        # varied between runs. A test whose fixture differs per run cannot be
+        # reasoned about when it eventually fails.
+        for index, recipient_id in enumerate(dict.fromkeys(recipients_with_dup)):
             store.register_session_binding(_make_binding(recipient_id, index))
 
         with pytest.raises(ValueError, match="duplicate recipient"):
             store.replace_room_roster("family-seam-dup", recipients_with_dup)
 
-        # The broadcast never ran; the journal was never opened.
-        # Asserting that no rows exist verifies the rejection happened
-        # BEFORE the seam could be crossed.
+        # Assert unconditionally. The previous version guarded this on
+        # `if journal_path.exists()`, which meant that in the PASSING case — the
+        # journal correctly never created — the assertion did not run at all.
+        # A check that only executes when something has already gone wrong is
+        # not a check; it is the vacuous-assertion shape one level up, wearing
+        # a defensive-programming disguise.
+        #
+        # Opening the journal CREATES it, so existence proves nothing either
+        # way. What proves the rejection happened before the seam was crossed
+        # is that a freshly-opened journal has no rows.
         journal_path = _tmp_seam / "dup-journal.sqlite"
-        if journal_path.exists():
-            with InjectionJournal(journal_path) as j:
-                assert len(j.unsettled()) == 0, (
-                    "duplicate roster was rejected; the journal must have "
-                    "zero rows. The seam was crossed before the rejection."
-                )
+        with InjectionJournal(journal_path) as j:
+            assert len(j.unsettled()) == 0, (
+                "duplicate roster was rejected; the journal must have "
+                "zero rows. The seam was crossed before the rejection."
+            )
     finally:
         store.close()
 

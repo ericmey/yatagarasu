@@ -17,12 +17,16 @@ Two rules shape the whole module:
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from collections.abc import Callable, Iterable, Sequence
-from dataclasses import dataclass
 from typing import Protocol
 
-from .marker import Marker, MarkerError, mint, redact
+from yatagarasu_core import Delivery
+from yatagarasu_core.proofs import DeliveryMarker, MarkerAuthority
+
+from .harness_profiles import HarnessKind, profile_for
+from .marker import MarkerError, redact
 from .outcome import SubmitOutcome, SubmitResult
 
 log = logging.getLogger(__name__)
@@ -50,7 +54,7 @@ class Transport(Protocol):
 
     def send_text(self, surface: str, text: str) -> None: ...
 
-    def submit(self, surface: str) -> None: ...
+    def submit(self, surface: str, key: str) -> None: ...
 
 
 class BusObserver(Protocol):
@@ -61,17 +65,17 @@ class BusObserver(Protocol):
     a true negative and an ambiguous outcome.
     """
 
-    def observe(self, marker: Marker, timeout_s: float) -> Iterable[str]: ...
+    def observe(self, marker: DeliveryMarker, timeout_s: float) -> Iterable[str]: ...
 
 
-@dataclass(slots=True)
+@dataclasses.dataclass(slots=True)
 class Injector:
     """Delivers one message into one identity's live session."""
 
     resolver: Resolver
     transport: Transport
     observer: BusObserver
-    signing_key: bytes
+    marker_authority: MarkerAuthority
     submit_timeout_s: float = 10.0
     #: Called with ``(delivery_id, surface)`` immediately BEFORE the local effect
     #: is attempted — the pane has not been touched yet when this fires. The
@@ -81,21 +85,47 @@ class Injector:
     #: recovery would read "never injected".
     on_effect_pending: Callable[[str, str], None] | None = None
 
-    def deliver(self, identity: str, delivery_id: str, body: str) -> SubmitResult:
+    def deliver(
+        self,
+        identity: str,
+        delivery: Delivery,
+        body: str,
+        issued_at: str,
+        expires_at: str,
+        *,
+        harness: HarnessKind | str,
+    ) -> SubmitResult:
         """Inject ``body`` for ``identity`` and report a definite outcome.
 
         Never returns an optimistic result. If the required evidence does not
         arrive, the outcome is a true negative or an explicit unknown.
         """
+        delivery_id = delivery.delivery_id
         # Minting can reject a bad key or delivery_id. That happens before any
         # local effect, so it is a clean negative, not an ambiguity — and this
         # method promises a verdict, never an exception.
         try:
-            marker = mint(self.signing_key, delivery_id)
-        except MarkerError as exc:
+            marker = self.marker_authority.mint(
+                delivery, issued_at=issued_at, expires_at=expires_at
+            )
+        except (MarkerError, ValueError) as exc:
             log.warning("marker mint failed delivery=%s", delivery_id)
             return SubmitResult(
                 SubmitOutcome.NOT_SUBMITTED, delivery_id, (), f"marker error: {exc}"
+            )
+
+        # The authoritative binding must name a supported harness. Reject an
+        # unknown profile before resolving or touching any terminal surface.
+        try:
+            profile = profile_for(harness)
+            encoded_marker = self.marker_authority.encode(marker)
+            text = profile.render(f"{encoded_marker} {body}")
+        except ValueError as exc:
+            return SubmitResult(
+                SubmitOutcome.NOT_SUBMITTED,
+                delivery_id,
+                (),
+                f"harness profile error: {exc}",
             )
 
         # Resolved per send, never cached: a handle from a previous send may now
@@ -113,8 +143,6 @@ class Injector:
                 f"unresolved: {exc}",
             )
 
-        text = f"{marker.text} {body}"
-
         # From here the local effect may fire. Record intent BEFORE touching the
         # surface: a crash between the effect and the journal write would
         # otherwise look like "never injected" and invite a duplicate turn.
@@ -123,7 +151,7 @@ class Injector:
 
         try:
             self.transport.send_text(surface, text)
-            self.transport.submit(surface)
+            self.transport.submit(surface, profile.submit_key)
         except Exception as exc:
             # The send may have partially applied. We cannot prove it did not.
             log.warning(
@@ -137,7 +165,7 @@ class Injector:
 
         return self._await_proof(marker, delivery_id)
 
-    def _await_proof(self, marker: Marker, delivery_id: str) -> SubmitResult:
+    def _await_proof(self, marker: DeliveryMarker, delivery_id: str) -> SubmitResult:
         seen: list[str] = []
         for name in self.observer.observe(marker, self.submit_timeout_s):
             if name not in seen:

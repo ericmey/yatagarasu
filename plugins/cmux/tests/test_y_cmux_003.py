@@ -33,13 +33,39 @@ import pytest
 from yatagarasu_cmux import (
     EVENT_INPUT_SENT,
     EVENT_PROMPT_SUBMITTED,
+    HarnessKind,
     Injector,
-    Marker,
     ResolutionError,
 )
 from yatagarasu_cmux.outcome import SubmitResult
 
+from yatagarasu_core import Delivery, DeliveryMode
+from yatagarasu_core.proofs import MarkerAuthority
+
 SIGNING_KEY = b"acceptance-only-signing-key"
+ISSUED_AT = "2026-07-19T20:00:00Z"
+EXPIRES_AT = "2026-07-19T20:05:00Z"
+
+
+def _deliver(inj: Injector, identity: str, delivery_id: str, body: str):
+    """Call deliver with the core Delivery the injector now requires.
+
+    The signature changed in #47 (the injector mints through MarkerAuthority and
+    therefore needs the delivery record). The assertions below are Tama's,
+    unchanged — this helper exists so the signature change does not force a
+    rewrite of what they check.
+    """
+    delivery = Delivery(
+        "ev", delivery_id, "attempt", "b-1", identity, DeliveryMode.SESSION_BOUND
+    )
+    return inj.deliver(
+        identity,
+        delivery,
+        body,
+        ISSUED_AT,
+        EXPIRES_AT,
+        harness=HarnessKind.CLAUDE_CODE,
+    )
 
 
 class _Resolver:
@@ -65,20 +91,20 @@ class _Resolver:
 class _Transport:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
-        self.submitted: list[str] = []
+        self.submitted: list[tuple[str, str]] = []
 
     def send_text(self, surface: str, text: str) -> None:
         self.sent.append((surface, text))
 
-    def submit(self, surface: str) -> None:
-        self.submitted.append(surface)
+    def submit(self, surface: str, key: str) -> None:
+        self.submitted.append((surface, key))
 
 
 class _Observer:
     def __init__(self, events: list[str]) -> None:
         self._events = list(events)
 
-    def observe(self, marker: Marker, timeout_s: float) -> Iterable[str]:
+    def observe(self, marker, timeout_s: float) -> Iterable[str]:
         yield from self._events
 
 
@@ -87,7 +113,7 @@ def _build_injector(events: list[str], resolver: _Resolver) -> Injector:
         resolver=resolver,
         transport=_Transport(),
         observer=_Observer(events),
-        signing_key=SIGNING_KEY,
+        marker_authority=MarkerAuthority(SIGNING_KEY),
         submit_timeout_s=0.05,
     )
 
@@ -106,14 +132,14 @@ def test_y_cmux_003_restart_resolves_to_new_surface_with_same_identity() -> None
         resolver=resolver,
         transport=transport,
         observer=_Observer([EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED]),
-        signing_key=SIGNING_KEY,
+        marker_authority=MarkerAuthority(SIGNING_KEY),
         submit_timeout_s=0.05,
     )
 
     # First send: lands in surface:33
-    first: SubmitResult = inj.deliver("peer", "d-001", "first body")
+    first: SubmitResult = _deliver(inj, "peer", "d-001", "first body")
     # Second send: lands in surface:3 (the post-restart surface)
-    second: SubmitResult = inj.deliver("peer", "d-002", "second body")
+    second: SubmitResult = _deliver(inj, "peer", "d-002", "second body")
 
     assert first.is_proven and second.is_proven, (
         "both sends must prove submission; this is a positive-control "
@@ -154,12 +180,12 @@ def test_y_cmux_003_adversarial_stale_state_does_not_persist_across_sends() -> N
         resolver=resolver,
         transport=transport,
         observer=_Observer([EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED]),
-        signing_key=SIGNING_KEY,
+        marker_authority=MarkerAuthority(SIGNING_KEY),
         submit_timeout_s=0.05,
     )
 
-    inj.deliver("peer", "d-003", "body one")
-    inj.deliver("peer", "d-004", "body two")
+    _deliver(inj, "peer", "d-003", "body one")
+    _deliver(inj, "peer", "d-004", "body two")
 
     surfaces_used = [s for s, _ in transport.sent]
     assert surfaces_used == ["surface:stale", "surface:fresh"], (

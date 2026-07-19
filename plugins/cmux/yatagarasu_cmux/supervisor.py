@@ -21,10 +21,14 @@ import logging
 import os
 import secrets
 import stat
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from yatagarasu_core import Delivery, DeliveryMarker, Receipt
+
 from .event_outbox import EventOutbox
+from .receipt_producer import DerivedEventReceiptProducer
 from .resident import EventStreamResident
 from .runtime import RuntimeConfig, RuntimeDiscoveryError
 from .socket_client import UnixCmuxSocketClient
@@ -81,6 +85,26 @@ class Supervisor:
     """Builds the resident from validated config and runs it."""
 
     config: RuntimeConfig
+    receipt_producer: DerivedEventReceiptProducer | None = None
+
+    @classmethod
+    def with_receipts(
+        cls,
+        config: RuntimeConfig,
+        *,
+        core_client: Callable[[Receipt], None],
+        provider_id: str,
+        delivery_lookup: Callable[[str], tuple[Delivery, DeliveryMarker] | None],
+    ) -> Supervisor:
+        """Construct the production emitter and attach it to the resident."""
+        return cls(
+            config,
+            receipt_producer=DerivedEventReceiptProducer(
+                core_client=core_client,
+                provider_id=provider_id,
+                delivery_lookup=delivery_lookup,
+            ),
+        )
 
     def build(self) -> tuple[EventStreamResident, EventOutbox]:
         outbox = EventOutbox(self.config.outbox_path)
@@ -92,6 +116,7 @@ class Supervisor:
             client=client,
             outbox=outbox,
             marker_key=load_or_create_marker_key(self.config),
+            receipt_producer=self.receipt_producer,
         )
         return resident, outbox
 

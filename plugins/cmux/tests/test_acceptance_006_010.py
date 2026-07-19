@@ -11,18 +11,19 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterable
 
-import pytest
 from yatagarasu_cmux import (
     EVENT_INPUT_SENT,
     EVENT_PROMPT_SUBMITTED,
+    CmuxSocketTransport,
     EventCursor,
     EventOutbox,
     EventStreamResident,
+    HarnessKind,
     Injector,
-    Marker,
     NotificationLifecycle,
     SubmitOutcome,
     UnixCmuxSocketClient,
+    profile_for,
 )
 from yatagarasu_cmux.journal import InjectionJournal, JournalState
 
@@ -71,7 +72,7 @@ def test_y_cmux_006_slow_consumer_reconnect_has_no_double_injection(
             resolver=_Resolver(),
             transport=transport,
             observer=_Observer((EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED)),
-            signing_key=SIGNING_KEY,
+            marker_authority=MarkerAuthority(SIGNING_KEY),
             on_effect_pending=lambda delivery_id, _surface: journal.prepare(
                 delivery_id=delivery_id,
                 binding_id="binding-006",
@@ -80,13 +81,28 @@ def test_y_cmux_006_slow_consumer_reconnect_has_no_double_injection(
                 now=1.0,
             ),
         )
-        submitted = injector.deliver("yua", "delivery-006", "one turn only")
-        assert submitted.outcome is SubmitOutcome.SUBMITTED
+        delivery = Delivery(
+            "ev-006",
+            "delivery-006",
+            "attempt",
+            "b-1",
+            "yua",
+            DeliveryMode.SESSION_BOUND,
+        )
+        result = injector.deliver(
+            "yua",
+            delivery,
+            "test message",
+            "2026-07-19T20:00:00Z",
+            "2026-07-19T20:05:00Z",
+            harness=HarnessKind.CODEX,
+        )
+        assert result.outcome is SubmitOutcome.SUBMITTED
         journal.settle(
             delivery_id="delivery-006",
             state=JournalState.INJECTED,
             now=2.0,
-            source_events=submitted.source_events,
+            source_events=tuple(result.source_events),
         )
 
         scripts = [
@@ -781,39 +797,49 @@ class _Resolver:
 class _Transport:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
-        self.submitted: list[str] = []
+        self.submitted: list[tuple[str, str]] = []
 
     def send_text(self, surface: str, text: str) -> None:
         self.sent.append((surface, text))
 
-    def submit(self, surface: str) -> None:
-        self.submitted.append(surface)
+    def submit(self, surface: str, key: str) -> None:
+        self.submitted.append((surface, key))
 
 
 class _Observer:
     def __init__(self, events: tuple[str, ...] = (EVENT_INPUT_SENT,)) -> None:
         self._events = events
 
-    def observe(self, marker: Marker, timeout_s: float) -> Iterable[str]:
+    def observe(self, marker, timeout_s: float) -> Iterable[str]:
         yield from self._events
 
 
 def test_y_cmux_010_incomplete_busy_submit_holds_and_never_requeues() -> None:
-    """Reopen SEV-1 if ambiguous admission is blindly requeued.
+    """Reopen SEV-1 if an ambiguous terminal submit is blindly requeued.
 
-    The native composer no-clobber behavior remains gated on issue #26.  This
-    test proves the implemented injector side of the contract: once CMUX accepts
-    input but has not emitted prompt-submitted, the result is UNKNOWN and held.
+    Once CMUX accepts input but has not emitted prompt-submitted, the result is
+    UNKNOWN and held. The plugin never retries by guessing whether the harness
+    accepted the next-turn action.
     """
     transport = _Transport()
     injector = Injector(
         resolver=_Resolver(),
         transport=transport,
         observer=_Observer(),
-        signing_key=SIGNING_KEY,
+        marker_authority=MarkerAuthority(SIGNING_KEY),
     )
 
-    result = injector.deliver("yua", "delivery-010", "next turn")
+    delivery = Delivery(
+        "ev-010", "delivery-010", "attempt", "b-1", "yua", DeliveryMode.SESSION_BOUND
+    )
+    result = injector.deliver(
+        "yua",
+        delivery,
+        "next turn",
+        "2026-07-19T20:00:00Z",
+        "2026-07-19T20:05:00Z",
+        harness=HarnessKind.CODEX,
+    )
 
     observations = {
         "outcome": result.outcome.value,
@@ -833,8 +859,38 @@ def test_y_cmux_010_incomplete_busy_submit_holds_and_never_requeues() -> None:
     }
 
 
-@pytest.mark.skip(
-    reason="Y-CMUX-010 native composer no-clobber proof requires production issue #26"
-)
-def test_y_cmux_010_busy_composer_is_unchanged_until_turn_completion() -> None:
-    """Reopen SEV-1 if delivery mutates a busy human composer."""
+def test_y_cmux_010_busy_codex_send_uses_next_turn_action(tmp_path) -> None:
+    """Reopen SEV-1 if busy delivery takes Codex's steer path.
+
+    The real Unix socket seam must receive exactly one text injection followed
+    by Codex's explicit queue key. Codex itself owns and drains the next-turn
+    queue; Yatagarasu owns selecting ``tab`` rather than busy ``enter``.
+    """
+    socket_path = short_socket_path(tmp_path, "acceptance-010")
+    with CmuxSocketHarness(socket_path, []) as harness:
+        transport = CmuxSocketTransport.from_socket_path(socket_path)
+        profile = profile_for(HarnessKind.CODEX)
+        transport.send_text(
+            "00000000-0000-0000-0000-000000000010", profile.render("next turn")
+        )
+        transport.submit("00000000-0000-0000-0000-000000000010", profile.submit_key)
+
+    observations = [
+        (request["method"], request["params"]) for request in harness.command_requests
+    ]
+    assert observations == [
+        (
+            "surface.send_text",
+            {
+                "surface_id": "00000000-0000-0000-0000-000000000010",
+                "text": "next turn",
+            },
+        ),
+        (
+            "surface.send_key",
+            {
+                "surface_id": "00000000-0000-0000-0000-000000000010",
+                "key": "tab",
+            },
+        ),
+    ]
