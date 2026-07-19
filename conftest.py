@@ -29,9 +29,9 @@ import pytest
 
 _SKIP_FLOOR_ENV = "YATAGARASU_SKIP_FLOOR"
 # Default floor is the EXACT count of honestly-skipped hooks with tracked
-# issues — not a ceiling. As of 2026-07-19 there are 3, each referencing an
+# issues — not a ceiling. As of 2026-07-19 there are 2, each referencing an
 # open issue in the path-to-completion plan (#37):
-#   Y-CMUX-010 -> #26  Y-CMUX-012 -> #28  Y-CMUX-014 -> #29
+#   Y-CMUX-010 -> #26  Y-CMUX-014 -> #29
 #
 # History, kept because it is the argument for the `!=` check below:
 #   Y-CMUX-008 -> #24 landed in PR #39, floor 7 -> 6.
@@ -42,6 +42,11 @@ _SKIP_FLOOR_ENV = "YATAGARASU_SKIP_FLOOR"
 #     again. That second miss is why this stopped being a convention: the
 #     enforcement now fails on ANY divergence, so closing a skip without
 #     moving the floor is caught in the run that closes it.
+#   Y-CMUX-012 -> #28 began passing in PR #42 once the injector minted through
+#     MarkerAuthority and the emitter could finally see a marker. Floor 3 -> 2,
+#     and the mechanism did the reminding: the run that closed the skip failed.
+#     Note the `!=` gate guards the NUMBER; nothing guards this prose beside it,
+#     and it went stale here once already. Change both together.
 #
 # Changing the floor requires either:
 #   1. A new tracked skip (add its issue ref to the list above), OR
