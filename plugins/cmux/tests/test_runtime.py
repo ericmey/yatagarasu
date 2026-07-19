@@ -36,7 +36,8 @@ def bound_socket():
     # AF_UNIX paths are capped around 104 bytes on macOS, and pytest's tmp_path
     # is comfortably longer than that. Binding under a short directory keeps
     # these tests about permissions rather than about path length.
-    short_root = Path(tempfile.mkdtemp(prefix="ygr", dir="/tmp"))
+    tmp = tempfile.TemporaryDirectory(prefix="ygr", dir="/tmp")
+    short_root = Path(tmp.name)
 
     def _bind(name, mode=0o600):
         path = short_root / Path(name).name
@@ -50,6 +51,9 @@ def bound_socket():
 
     for sock in opened:
         sock.close()
+    # Clean up the short-path directory too: the first draft fixed the socket
+    # leak and introduced a directory leak in its place.
+    tmp.cleanup()
 
 
 def test_explicit_path_wins_over_environment(tmp_path, monkeypatch):
@@ -140,3 +144,35 @@ def test_describe_says_which_auth_is_in_use(tmp_path, monkeypatch, bound_socket)
     monkeypatch.delenv("CMUX_SOCKET_PASSWORD", raising=False)
 
     assert "0600" in describe(load(socket_path=sock, source_instance_id="h"))
+
+
+# --- regression tests for the review findings on this module ---
+
+
+def test_tilde_in_xdg_state_home_is_expanded(monkeypatch):
+    """A literal tilde would resolve to a directory named "~" in the process
+    working directory, silently breaking discovery."""
+    monkeypatch.setenv("XDG_STATE_HOME", "~/.local/state")
+    monkeypatch.delenv("CMUX_SOCKET_PATH", raising=False)
+
+    resolved = discover_socket_path()
+    assert "~" not in str(resolved)
+    assert resolved == Path.home() / ".local" / "state" / "cmux" / "cmux.sock"
+
+
+def test_socket_owned_by_another_user_is_refused(tmp_path, bound_socket, monkeypatch):
+    """A 0600 socket owned by someone else passes both the type and the
+    permission-breadth checks and is still unusable. The mode is only an
+    authentication boundary when we are the owner it is closed around."""
+    path = bound_socket(tmp_path / "other.sock", mode=0o600)
+    monkeypatch.setattr(os, "getuid", lambda: os.stat(path).st_uid + 1)
+
+    with pytest.raises(RuntimeDiscoveryError, match="owned by uid"):
+        verify_socket(path)
+
+
+def test_fixture_cleans_up_its_temp_directory(tmp_path, bound_socket):
+    """The first draft fixed a socket leak and introduced a directory leak."""
+    path = bound_socket(tmp_path / "cleanup.sock")
+    assert path.parent.exists()
+    assert path.parent.name.startswith("ygr")

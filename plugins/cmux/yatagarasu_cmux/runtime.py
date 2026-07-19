@@ -41,8 +41,16 @@ class RuntimeDiscoveryError(RuntimeError):
 
 
 def state_home() -> Path:
-    """XDG state directory, with the platform default."""
-    return Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
+    """XDG state directory, with the platform default.
+
+    Expanded, because a user may reasonably export ``XDG_STATE_HOME=~/.local/state``
+    and a literal tilde would silently resolve to a directory named "~" in the
+    process working directory.
+    """
+    configured = os.environ.get("XDG_STATE_HOME")
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / ".local" / "state"
 
 
 def discover_socket_path(explicit: str | os.PathLike[str] | None = None) -> Path:
@@ -58,12 +66,18 @@ def discover_socket_path(explicit: str | os.PathLike[str] | None = None) -> Path
 
 
 def verify_socket(path: Path) -> Path:
-    """Confirm the path is a socket this process may use.
+    """Confirm the path is a socket **this** process may use.
 
-    Checks the mode as well as existence: a control socket that is group- or
-    world-accessible means the permission boundary we are relying on for
-    authentication is not actually closed, and the operator should know before
-    the resident starts injecting into sessions.
+    Three checks, and the third exists because the first draft of this function
+    made a claim broader than what it verified: it said "a socket this process
+    may use" while only checking file type and permission breadth. A ``0600``
+    socket owned by a *different* user passes both of those and is still
+    unusable — the mode is only an authentication boundary if we are the owner
+    it is closed around.
+
+    This does not attempt a connection. Connecting has side effects on the
+    server and would make a read-only preflight check stateful; ownership plus
+    mode is what can be honestly asserted without touching cmux.
     """
     if not path.exists():
         legacy = Path.home() / ".config" / _LEGACY_HINT
@@ -82,6 +96,13 @@ def verify_socket(path: Path) -> Path:
         raise RuntimeDiscoveryError(
             f"{path} is accessible beyond its owner (mode {stat.S_IMODE(mode):04o});"
             " refusing to rely on filesystem permissions for authentication"
+        )
+
+    owner = path.stat().st_uid
+    if owner != os.getuid():
+        raise RuntimeDiscoveryError(
+            f"{path} is owned by uid {owner}, not this process (uid {os.getuid()});"
+            " a 0600 socket is only a usable boundary when we are its owner"
         )
     return path
 
