@@ -213,6 +213,58 @@ class CoreStore:
         )
         self._ensure_column("receipts", "turn_id", "TEXT")
         self.connection.commit()
+        self._migrate_nullable_delivery_binding()
+
+    def _migrate_nullable_delivery_binding(self) -> None:
+        """Rebuild the pre-broadcast table whose binding column was NOT NULL."""
+        columns = {
+            row["name"]: row
+            for row in self.connection.execute("PRAGMA table_info(deliveries)")
+        }
+        binding_column = columns.get("binding_id")
+        if binding_column is None or not binding_column["notnull"]:
+            return
+
+        self.connection.commit()
+        self.connection.execute("PRAGMA foreign_keys = OFF")
+        self.connection.execute("PRAGMA legacy_alter_table = ON")
+        try:
+            with self.connection:
+                self.connection.execute(
+                    "ALTER TABLE deliveries RENAME TO deliveries_legacy_not_null"
+                )
+                self.connection.execute(
+                    """CREATE TABLE deliveries (
+                        delivery_id TEXT PRIMARY KEY,
+                        event_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        binding_id TEXT,
+                        recipient_id TEXT NOT NULL,
+                        delivery_mode TEXT NOT NULL
+                            CHECK (delivery_mode IN ('session-bound', 'channel-native')),
+                        state TEXT NOT NULL,
+                        disposition TEXT
+                    )"""
+                )
+                self.connection.execute(
+                    """INSERT INTO deliveries
+                       (delivery_id, event_id, attempt_id, binding_id, recipient_id,
+                        delivery_mode, state, disposition)
+                       SELECT delivery_id, event_id, attempt_id, binding_id,
+                              recipient_id, delivery_mode, state, disposition
+                       FROM deliveries_legacy_not_null"""
+                )
+                self.connection.execute("DROP TABLE deliveries_legacy_not_null")
+                violations = self.connection.execute(
+                    "PRAGMA foreign_key_check"
+                ).fetchall()
+                if violations:
+                    raise RuntimeError(
+                        "delivery binding migration broke foreign-key integrity"
+                    )
+        finally:
+            self.connection.execute("PRAGMA legacy_alter_table = OFF")
+            self.connection.execute("PRAGMA foreign_keys = ON")
 
     def _ensure_column(self, table: str, column: str, declaration: str) -> None:
         columns = {

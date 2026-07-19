@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections import defaultdict
 
 import pytest
@@ -289,5 +290,69 @@ def test_result_names_durable_snapshot_inconsistency() -> None:
 
         with pytest.raises(BroadcastConflictError, match="snapshot is inconsistent"):
             kernel.result(created.broadcast_id)
+    finally:
+        store.close()
+
+
+def test_prior_not_null_delivery_schema_migrates_without_losing_state(
+    tmp_path,
+) -> None:
+    database = tmp_path / "prior-core.sqlite"
+    connection = sqlite3.connect(database)
+    connection.executescript(
+        """
+        CREATE TABLE deliveries (
+            delivery_id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL,
+            attempt_id TEXT NOT NULL,
+            binding_id TEXT NOT NULL,
+            recipient_id TEXT NOT NULL,
+            delivery_mode TEXT NOT NULL,
+            state TEXT NOT NULL,
+            disposition TEXT
+        );
+        INSERT INTO deliveries VALUES (
+            'prior-delivery', 'prior-event', 'prior-attempt', 'prior-binding',
+            'yua', 'session-bound', 'queued', NULL
+        );
+        """
+    )
+    connection.close()
+
+    store = CoreStore(database)
+    try:
+        binding_column = next(
+            row
+            for row in store.connection.execute("PRAGMA table_info(deliveries)")
+            if row["name"] == "binding_id"
+        )
+        assert binding_column["notnull"] == 0
+        assert store.get_delivery("prior-delivery").binding_id == "prior-binding"
+        assert store.connection.execute("PRAGMA foreign_key_check").fetchall() == []
+        assert store.connection.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        for child_table in (
+            "platform_message_bindings",
+            "receipts",
+            "audit_log",
+            "broadcast_recipients",
+        ):
+            referenced_tables = {
+                row["table"]
+                for row in store.connection.execute(
+                    f"PRAGMA foreign_key_list({child_table})"
+                )
+            }
+            assert "deliveries" in referenced_tables
+            assert "deliveries_legacy_not_null" not in referenced_tables
+
+        store.replace_room_roster("migration-room", ("unbound-seat",))
+        result = BroadcastKernel(store, SequentialIds()).broadcast(
+            actor_id="eric",
+            room_id="migration-room",
+            content="Nullable after migration",
+            accepted_at=NOW,
+        )
+        assert result.outcomes[0].binding_id is None
+        assert result.outcomes[0].state is DeliveryState.QUEUED
     finally:
         store.close()
