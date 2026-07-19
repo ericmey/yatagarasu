@@ -60,6 +60,8 @@ class MarkerAuthority:
     def mint(
         self, delivery: Delivery, *, issued_at: str, expires_at: str
     ) -> DeliveryMarker:
+        if delivery.binding_id is None:
+            raise ValueError("cannot mint a marker without an authoritative binding")
         lifetime = parse_timestamp(expires_at) - parse_timestamp(issued_at)
         if lifetime <= timedelta(0):
             raise ValueError("marker expiry must follow issue time")

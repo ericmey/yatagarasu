@@ -24,6 +24,14 @@ delivery. A Stop receipt must close the exact prompt chain previously accepted.
 Markers are conversation-scoped correlation, not credentials. Raw prompt text is
 never represented by the core proof types or stored in receipt/audit tables.
 
+`BroadcastKernel` is the Round-1 group primitive. It atomically records one
+canonical event, freezes the room roster at acceptance, and creates one queued
+delivery per resolved recipient. A registered seat without a live authoritative
+binding still receives a durable queued row with visible absence; later roster
+changes do not rewrite the snapshot. `BroadcastResult` always exposes the
+literal per-seat matrix, and `all_delivered` remains false while any row is
+queued or dispatching.
+
 Run its contract tests from the repository root:
 
 ```bash

@@ -53,7 +53,7 @@ class CoreStore:
                 delivery_id TEXT PRIMARY KEY,
                 event_id TEXT NOT NULL,
                 attempt_id TEXT NOT NULL,
-                binding_id TEXT NOT NULL,
+                binding_id TEXT,
                 recipient_id TEXT NOT NULL,
                 delivery_mode TEXT NOT NULL
                     CHECK (delivery_mode IN ('session-bound', 'channel-native')),
@@ -159,6 +159,50 @@ class CoreStore:
                 observed_at TEXT NOT NULL,
                 reason TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS rooms (
+                room_id TEXT PRIMARY KEY
+            );
+
+            CREATE TABLE IF NOT EXISTS room_members (
+                room_id TEXT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
+                recipient_id TEXT NOT NULL,
+                roster_ordinal INTEGER NOT NULL,
+                PRIMARY KEY (room_id, recipient_id),
+                UNIQUE (room_id, roster_ordinal)
+            );
+
+            CREATE TABLE IF NOT EXISTS canonical_events (
+                event_id TEXT PRIMARY KEY,
+                actor_id TEXT NOT NULL,
+                room_id TEXT NOT NULL REFERENCES rooms(room_id),
+                content TEXT NOT NULL,
+                accepted_at TEXT NOT NULL,
+                authority_scope TEXT NOT NULL CHECK (authority_scope = 'conversation')
+            );
+
+            CREATE TABLE IF NOT EXISTS broadcasts (
+                broadcast_id TEXT PRIMARY KEY,
+                event_id TEXT NOT NULL UNIQUE REFERENCES canonical_events(event_id),
+                room_id TEXT NOT NULL REFERENCES rooms(room_id),
+                roster_snapshot_size INTEGER NOT NULL CHECK (roster_snapshot_size >= 0)
+            );
+
+            CREATE TABLE IF NOT EXISTS broadcast_recipients (
+                broadcast_id TEXT NOT NULL REFERENCES broadcasts(broadcast_id),
+                recipient_id TEXT NOT NULL,
+                roster_ordinal INTEGER NOT NULL,
+                binding_id TEXT,
+                delivery_id TEXT NOT NULL UNIQUE REFERENCES deliveries(delivery_id),
+                PRIMARY KEY (broadcast_id, recipient_id),
+                UNIQUE (broadcast_id, roster_ordinal)
+            );
+
+            CREATE TABLE IF NOT EXISTS broadcast_audit (
+                broadcast_id TEXT PRIMARY KEY REFERENCES broadcasts(broadcast_id),
+                event_id TEXT NOT NULL,
+                roster_snapshot_size INTEGER NOT NULL
+            );
             """
         )
         self._ensure_column("providers", "health", "TEXT NOT NULL DEFAULT 'healthy'")
@@ -169,6 +213,58 @@ class CoreStore:
         )
         self._ensure_column("receipts", "turn_id", "TEXT")
         self.connection.commit()
+        self._migrate_nullable_delivery_binding()
+
+    def _migrate_nullable_delivery_binding(self) -> None:
+        """Rebuild the pre-broadcast table whose binding column was NOT NULL."""
+        columns = {
+            row["name"]: row
+            for row in self.connection.execute("PRAGMA table_info(deliveries)")
+        }
+        binding_column = columns.get("binding_id")
+        if binding_column is None or not binding_column["notnull"]:
+            return
+
+        self.connection.commit()
+        self.connection.execute("PRAGMA foreign_keys = OFF")
+        self.connection.execute("PRAGMA legacy_alter_table = ON")
+        try:
+            with self.connection:
+                self.connection.execute(
+                    "ALTER TABLE deliveries RENAME TO deliveries_legacy_not_null"
+                )
+                self.connection.execute(
+                    """CREATE TABLE deliveries (
+                        delivery_id TEXT PRIMARY KEY,
+                        event_id TEXT NOT NULL,
+                        attempt_id TEXT NOT NULL,
+                        binding_id TEXT,
+                        recipient_id TEXT NOT NULL,
+                        delivery_mode TEXT NOT NULL
+                            CHECK (delivery_mode IN ('session-bound', 'channel-native')),
+                        state TEXT NOT NULL,
+                        disposition TEXT
+                    )"""
+                )
+                self.connection.execute(
+                    """INSERT INTO deliveries
+                       (delivery_id, event_id, attempt_id, binding_id, recipient_id,
+                        delivery_mode, state, disposition)
+                       SELECT delivery_id, event_id, attempt_id, binding_id,
+                              recipient_id, delivery_mode, state, disposition
+                       FROM deliveries_legacy_not_null"""
+                )
+                self.connection.execute("DROP TABLE deliveries_legacy_not_null")
+                violations = self.connection.execute(
+                    "PRAGMA foreign_key_check"
+                ).fetchall()
+                if violations:
+                    raise RuntimeError(
+                        "delivery binding migration broke foreign-key integrity"
+                    )
+        finally:
+            self.connection.execute("PRAGMA legacy_alter_table = OFF")
+            self.connection.execute("PRAGMA foreign_keys = ON")
 
     def _ensure_column(self, table: str, column: str, declaration: str) -> None:
         columns = {
@@ -197,6 +293,60 @@ class CoreStore:
             ),
         )
         self.connection.commit()
+
+    def replace_room_roster(self, room_id: str, recipients: Iterable[str]) -> None:
+        """Replace the live room roster without mutating prior snapshots."""
+        ordered = tuple(recipients)
+        if not room_id or not ordered or any(not recipient for recipient in ordered):
+            raise ValueError("room and recipients must not be empty")
+        if len(set(ordered)) != len(ordered):
+            raise ValueError("room roster contains a duplicate recipient")
+        with self.connection:
+            self.connection.execute(
+                "INSERT OR IGNORE INTO rooms (room_id) VALUES (?)", (room_id,)
+            )
+            self.connection.execute(
+                "DELETE FROM room_members WHERE room_id = ?", (room_id,)
+            )
+            self.connection.executemany(
+                """INSERT INTO room_members (room_id, recipient_id, roster_ordinal)
+                   VALUES (?, ?, ?)""",
+                (
+                    (room_id, recipient_id, ordinal)
+                    for ordinal, recipient_id in enumerate(ordered)
+                ),
+            )
+
+    def room_roster(self, room_id: str) -> tuple[str, ...]:
+        rows = self.connection.execute(
+            """SELECT recipient_id FROM room_members
+               WHERE room_id = ? ORDER BY roster_ordinal""",
+            (room_id,),
+        ).fetchall()
+        return tuple(row["recipient_id"] for row in rows)
+
+    def broadcast_audit(self, broadcast_id: str) -> dict[str, object] | None:
+        row = self.connection.execute(
+            "SELECT * FROM broadcast_audit WHERE broadcast_id = ?", (broadcast_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def canonical_event(self, event_id: str) -> dict[str, object] | None:
+        row = self.connection.execute(
+            "SELECT * FROM canonical_events WHERE event_id = ?", (event_id,)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def deliveries_for_event(self, event_id: str) -> tuple[Delivery, ...]:
+        rows = self.connection.execute(
+            "SELECT delivery_id FROM deliveries WHERE event_id = ? ORDER BY rowid",
+            (event_id,),
+        ).fetchall()
+        return tuple(
+            delivery
+            for row in rows
+            if (delivery := self.get_delivery(row["delivery_id"])) is not None
+        )
 
     def set_dispatching(self, delivery_id: str) -> None:
         changed = self.connection.execute(
@@ -351,6 +501,21 @@ class CoreStore:
         return self.connection.execute(
             "SELECT * FROM session_bindings WHERE binding_id = ?", (binding_id,)
         ).fetchone()
+
+    def active_session_binding_for(
+        self, recipient_id: str, *, observed_at: str | None = None
+    ) -> sqlite3.Row | None:
+        row = self.connection.execute(
+            """SELECT * FROM session_bindings
+               WHERE recipient_id = ? AND state = ?""",
+            (recipient_id, BindingState.ACTIVE.value),
+        ).fetchone()
+        if row is None or observed_at is None:
+            return row
+        observed = parse_timestamp(observed_at)
+        established = parse_timestamp(row["established_at"])
+        expires = parse_timestamp(row["expires_at"])
+        return row if established <= observed < expires else None
 
     def binding_proof_method(
         self, binding_id: str, proof_method: str

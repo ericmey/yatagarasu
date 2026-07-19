@@ -120,7 +120,7 @@ class Delivery:
     event_id: str
     delivery_id: str
     attempt_id: str
-    binding_id: str
+    binding_id: str | None
     recipient_id: str
     delivery_mode: DeliveryMode
     state: DeliveryState = DeliveryState.QUEUED
@@ -153,3 +153,23 @@ class ReceiptResult:
     reason: str | None = None
     state: DeliveryState | None = None
     disposition: Disposition | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BroadcastOutcome:
+    recipient_id: str
+    delivery_id: str
+    binding_id: str | None
+    state: DeliveryState
+    disposition: Disposition | None = None
+    unavailable_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BroadcastResult:
+    broadcast_id: str
+    event_id: str
+    room_id: str
+    roster_snapshot_size: int
+    outcomes: tuple[BroadcastOutcome, ...]
+    all_delivered: bool

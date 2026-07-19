@@ -8,6 +8,7 @@ suite green.
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Iterable
 
 import pytest
@@ -20,6 +21,7 @@ from yatagarasu_cmux import (
 from yatagarasu_cmux.journal import InjectionJournal
 
 from yatagarasu_core import (
+    BroadcastKernel,
     CoreStore,
     CorrelationRule,
     Delivery,
@@ -385,11 +387,113 @@ def test_y_cmux_008_full_marker_binding_and_source_chain_is_required() -> None:
         store.close()
 
 
-@pytest.mark.skip(
-    reason="Y-CMUX-009 requires the production broadcast primitive in issue #25"
-)
 def test_y_cmux_009_broadcast_returns_one_literal_outcome_per_seat() -> None:
     """Reopen SEV-1 if a broadcast hides an absent seat behind a rollup."""
+    store = CoreStore()
+    counts: defaultdict[str, int] = defaultdict(int)
+
+    def next_id(kind: str) -> str:
+        counts[kind] += 1
+        return f"{kind}-009-{counts[kind]}"
+
+    recipients = ("yua", "aoi", "tama", "shiori", "nyla")
+    try:
+        store.register_provider(
+            "cmux-broadcast",
+            ProviderKind.SESSION_TRANSPORT,
+            {
+                EvidenceClass.TRANSPORT_SUBMIT_ACK,
+                EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+            },
+        )
+        for index, recipient_id in enumerate(recipients):
+            store.register_session_binding(
+                SessionBinding(
+                    binding_id=f"binding-009-{recipient_id}",
+                    recipient_id=recipient_id,
+                    provider_id="cmux-broadcast",
+                    adapter_instance_id="cmux-vesper",
+                    harness="codex",
+                    session_id=f"session-009-{recipient_id}",
+                    established_at="2026-07-18T22:00:00Z",
+                    expires_at="2026-07-19T00:00:00Z",
+                    proof_methods=(
+                        ProofMethodRegistration(
+                            proof_method=PROOF_METHOD,
+                            source_kind=SourceKind.EVENT_BUS,
+                            source_instance_id=f"source-009-{index}",
+                            correlation_rule=CorrelationRule.CMUX_HARNESS_CHAIN,
+                            evidence_classes=frozenset(
+                                {EvidenceClass.HARNESS_PROMPT_ACCEPTED}
+                            ),
+                        ),
+                    ),
+                )
+            )
+        store.replace_room_roster("family-009", recipients)
+        kernel = BroadcastKernel(store, next_id)
+        created = kernel.broadcast(
+            actor_id="eric",
+            room_id="family-009",
+            content="one canonical event",
+            accepted_at=OBSERVED_AT,
+        )
+
+        store.revoke_session_binding("binding-009-nyla")
+        reducer = ReceiptReducer(store)
+        for outcome in created.outcomes[:-1]:
+            delivery = store.get_delivery(outcome.delivery_id)
+            assert delivery is not None and delivery.binding_id is not None
+            store.set_dispatching(delivery.delivery_id)
+            accepted = reducer.submit(
+                Receipt(
+                    receipt_id=f"receipt-009-{outcome.recipient_id}",
+                    event_id=delivery.event_id,
+                    delivery_id=delivery.delivery_id,
+                    attempt_id=delivery.attempt_id,
+                    binding_id=delivery.binding_id,
+                    evidence_provider_id="cmux-broadcast",
+                    evidence_class=EvidenceClass.TRANSPORT_SUBMIT_ACK,
+                    proof_method="cmux.surface-input-chain",
+                    observed_at=OBSERVED_AT,
+                    source_event_id=f"source-submit-009-{outcome.recipient_id}",
+                )
+            )
+            assert accepted.state.value == "transport-submitted"
+
+        result = kernel.result(created.broadcast_id)
+        audit = store.broadcast_audit(created.broadcast_id)
+        observations = {
+            "broadcast.outcome_count": len(result.outcomes),
+            "outcome.states": {
+                outcome.recipient_id: outcome.state.value for outcome in result.outcomes
+            },
+            "outcome.unavailable": {
+                outcome.recipient_id: outcome.unavailable_reason
+                for outcome in result.outcomes
+                if outcome.unavailable_reason
+            },
+            "outcome.rollup.all_delivered": result.all_delivered,
+            "audit.broadcast_id": audit["broadcast_id"],
+            "audit.roster_snapshot_size": audit["roster_snapshot_size"],
+        }
+    finally:
+        store.close()
+
+    assert observations == {
+        "broadcast.outcome_count": 5,
+        "outcome.states": {
+            "yua": "transport-submitted",
+            "aoi": "transport-submitted",
+            "tama": "transport-submitted",
+            "shiori": "transport-submitted",
+            "nyla": "queued",
+        },
+        "outcome.unavailable": {"nyla": "binding-revoked-or-superseded"},
+        "outcome.rollup.all_delivered": False,
+        "audit.broadcast_id": created.broadcast_id,
+        "audit.roster_snapshot_size": 5,
+    }
 
 
 def test_y_cmux_009_journal_preserves_one_delivery_row_per_seat(tmp_path) -> None:
