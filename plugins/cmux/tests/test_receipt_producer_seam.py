@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import pytest
 from yatagarasu_cmux import EventOutbox, EventStreamResident, UnixCmuxSocketClient
-from yatagarasu_cmux.receipt_producer import DerivedEventReceiptProducer
+from yatagarasu_cmux.runtime import RuntimeConfig
+from yatagarasu_cmux.supervisor import Supervisor
 
 from yatagarasu_core import (
     CorrelationRule,
@@ -62,23 +63,7 @@ def _registration() -> ProofMethodRegistration:
 
 def _run_live_shaped_chain(tmp_path, delivery, wire_token, authoritative_marker):
     emitted = []
-    producer = DerivedEventReceiptProducer(
-        core_client=emitted.append,
-        provider_id=PROVIDER_ID,
-        delivery_lookup=lambda delivery_id: (
-            (delivery, authoritative_marker)
-            if delivery_id == delivery.delivery_id
-            else None
-        ),
-    )
-    frames = [
-        ack(
-            "boot-live",
-            replay_count=0,
-            gap=False,
-            requested_after_seq=None,
-            latest_seq=4,
-        ),
+    source_events = [
         event("boot-live", 1, name="surface.input_sent"),
         event(
             "boot-live",
@@ -99,16 +84,38 @@ def _run_live_shaped_chain(tmp_path, delivery, wire_token, authoritative_marker)
             payload={"session_id": SESSION_ID, "hook_event_name": "Stop"},
         ),
     ]
+    for source_event in source_events:
+        source_event["occurred_at"] = OBSERVED_AT
+    frames = [
+        ack(
+            "boot-live",
+            replay_count=0,
+            gap=False,
+            requested_after_seq=None,
+            latest_seq=4,
+        ),
+        *source_events,
+    ]
     socket_path = short_socket_path(tmp_path, "receipt-producer")
-    with EventOutbox(tmp_path / "events.sqlite") as outbox:
-        with CmuxSocketHarness(socket_path, [frames]):
-            run = EventStreamResident(
-                source_instance_id=SOURCE_INSTANCE,
-                client=UnixCmuxSocketClient(socket_path),
-                outbox=outbox,
-                marker_key=b"legacy-projector-key",
-                receipt_producer=producer,
-            ).run()
+    config = RuntimeConfig(
+        socket_path=socket_path,
+        state_dir=tmp_path / "state",
+        password=None,
+        source_instance_id=SOURCE_INSTANCE,
+    )
+    config.state_dir.mkdir()
+    supervisor = Supervisor.with_receipts(
+        config,
+        core_client=emitted.append,
+        provider_id=PROVIDER_ID,
+        delivery_lookup=lambda delivery_id: (
+            (delivery, authoritative_marker)
+            if delivery_id == delivery.delivery_id
+            else None
+        ),
+    )
+    with CmuxSocketHarness(socket_path, [frames]):
+        run = supervisor.run_once()
 
     assert run.inserted_event_count == 4
     assert len(emitted) == 1
@@ -117,15 +124,14 @@ def _run_live_shaped_chain(tmp_path, delivery, wire_token, authoritative_marker)
 
 def test_live_shaped_frames_cross_resident_and_validate(tmp_path, delivery) -> None:
     authority = MarkerAuthority(REAL_KEY)
-    authoritative = authority.mint(
-        delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT
-    )
+    authoritative = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
 
     receipt = _run_live_shaped_chain(
         tmp_path, delivery, authority.encode(authoritative), authoritative
     )
 
     assert receipt.proof is not None
+    assert receipt.observed_at == OBSERVED_AT
     assert (
         validate_session_proof(
             proof=receipt.proof,
@@ -133,7 +139,7 @@ def test_live_shaped_frames_cross_resident_and_validate(tmp_path, delivery) -> N
             evidence_class=receipt.evidence_class,
             registration=_registration(),
             marker_authority=authority,
-            observed_at=OBSERVED_AT,
+            observed_at=receipt.observed_at,
         )
         is None
     )
@@ -144,9 +150,7 @@ def test_wire_signature_mismatch_survives_translation_and_is_rejected(
 ) -> None:
     authority = MarkerAuthority(REAL_KEY)
     attacker = MarkerAuthority(ATTACKER_KEY)
-    authoritative = authority.mint(
-        delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT
-    )
+    authoritative = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
     forged = attacker.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
     assert forged.signature != authoritative.signature
 
@@ -164,7 +168,41 @@ def test_wire_signature_mismatch_survives_translation_and_is_rejected(
             evidence_class=receipt.evidence_class,
             registration=_registration(),
             marker_authority=authority,
-            observed_at=OBSERVED_AT,
+            observed_at=receipt.observed_at,
         )
         == "prompt_marker_binding_mismatch"
     )
+
+
+def test_receipt_sink_failure_does_not_advance_the_stream_cursor(tmp_path) -> None:
+    """Reopen if a failed receipt side effect becomes an unreplayable event."""
+
+    class FailingProducer:
+        def observe(self, event) -> None:
+            raise RuntimeError(f"receipt sink unavailable for {event.source_event_id}")
+
+    socket_path = short_socket_path(tmp_path, "receipt-producer-failure")
+    frames = [
+        ack(
+            "boot-failure",
+            replay_count=0,
+            gap=False,
+            requested_after_seq=None,
+            latest_seq=1,
+        ),
+        event("boot-failure", 1, name="surface.input_sent"),
+    ]
+    with EventOutbox(tmp_path / "failed-events.sqlite") as outbox:
+        with CmuxSocketHarness(socket_path, [frames]):
+            resident = EventStreamResident(
+                source_instance_id=SOURCE_INSTANCE,
+                client=UnixCmuxSocketClient(socket_path),
+                outbox=outbox,
+                marker_key=b"legacy-projector-key",
+                receipt_producer=FailingProducer(),
+            )
+            with pytest.raises(RuntimeError, match="receipt sink unavailable"):
+                resident.run()
+
+        assert outbox.cursor(SOURCE_INSTANCE) is None
+        assert outbox.outbox_rows(SOURCE_INSTANCE) == ()

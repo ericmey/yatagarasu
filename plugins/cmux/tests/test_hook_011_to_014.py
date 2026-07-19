@@ -144,7 +144,13 @@ def test_hook_012_turn_completed_never_answered():
     # Fixture B: Stray Stop from an unrelated session
     input_event = SourceEventRef("src", "boot", 1, "ev-1", "surface.input_sent")
     prompt_event = SourceEventRef(
-        "src", "boot", 2, "ev-2", "workspace.prompt.submitted"
+        "src",
+        "boot",
+        2,
+        "ev-2",
+        "workspace.prompt.submitted",
+        binding_id=core_marker.binding_id,
+        marker_signature=core_marker.signature,
     )
     user_prompt = SourceEventRef(
         "src", "boot", 3, "ev-3", "agent.hook.UserPromptSubmit", session_id="s-123"
@@ -190,7 +196,15 @@ def test_hook_012_turn_completed_never_answered():
         observed_at="2026-07-18T21:05:00Z",
     )
     emitter.observe(
-        SourceEventRef("src", "boot", 9, "ev-9", "workspace.prompt.submitted"),
+        SourceEventRef(
+            "src",
+            "boot",
+            9,
+            "ev-9",
+            "workspace.prompt.submitted",
+            binding_id=marker_2.binding_id,
+            marker_signature=marker_2.signature,
+        ),
         payload={"message_preview": encoded_marker_2},
         observed_at="2026-07-18T21:05:00Z",
     )

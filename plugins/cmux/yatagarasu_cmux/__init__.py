@@ -39,6 +39,11 @@ from .notifications import (
     validate_hook_effects,
 )
 from .outcome import SubmitOutcome, SubmitResult
+from .receipt_producer import (
+    DerivedEventReceiptProducer,
+    ReceiptProducerError,
+    source_event_from_derived,
+)
 from .resident import EventStreamResident, ResidentRun
 from .socket_client import SNAPSHOT_METHODS, UnixCmuxSocketClient
 from .socket_transport import CmuxSocketTransport
@@ -55,6 +60,7 @@ __all__ = [
     "CmuxSocketTransport",
     "CommitDisposition",
     "DerivedEvent",
+    "DerivedEventReceiptProducer",
     "EventCursor",
     "EventOutbox",
     "EventProjector",
@@ -68,6 +74,7 @@ __all__ = [
     "NotificationLifecycleError",
     "NotificationRecord",
     "OutboxError",
+    "ReceiptProducerError",
     "ResidentRun",
     "ResolutionError",
     "Resolver",
@@ -83,5 +90,6 @@ __all__ = [
     "mint",
     "profile_for",
     "redact",
+    "source_event_from_derived",
     "validate_hook_effects",
 ]
