@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import time
 from collections.abc import Callable, Iterable, Sequence
 from typing import Protocol
 
@@ -84,6 +85,9 @@ class Injector:
     #: were called after the effect, a crash in between would leave no record and
     #: recovery would read "never injected".
     on_effect_pending: Callable[[str, str], None] | None = None
+    #: The harness may require its first key effect to settle before the next
+    #: key. Injectable so tests assert ordering without sleeping.
+    sleep: Callable[[float], None] = time.sleep
 
     def deliver(
         self,
@@ -151,7 +155,9 @@ class Injector:
 
         try:
             self.transport.send_text(surface, text)
-            for key in profile.submit_keys:
+            for index, key in enumerate(profile.submit_keys):
+                if index and profile.inter_key_delay_s:
+                    self.sleep(profile.inter_key_delay_s)
                 self.transport.submit(surface, key)
         except Exception as exc:
             # The send may have partially applied. We cannot prove it did not.

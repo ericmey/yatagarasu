@@ -41,6 +41,7 @@ class HarnessProfile:
     submit_keys: tuple[str, ...]
     busy_enter_behavior: BusyEnterBehavior
     text_prefix: str = ""
+    inter_key_delay_s: float = 0.0
 
     def render(self, envelope: str) -> str:
         """Render one signed envelope without inspecting runtime UI state."""
@@ -63,6 +64,7 @@ _PROFILES = {
         # and the empty Enter is inert; idle Tab is inert and Enter submits.
         submit_keys=("tab", "enter"),
         busy_enter_behavior=BusyEnterBehavior.STEER,
+        inter_key_delay_s=0.1,
     ),
     HarnessKind.HERMES: HarnessProfile(
         kind=HarnessKind.HERMES,
