@@ -172,6 +172,34 @@ def test_gap_processes_replay_then_snapshots_on_separate_connections(tmp_path) -
         ]
 
 
+def test_zero_tail_gap_uses_new_boot_latest_sequence(tmp_path) -> None:
+    socket_path = short_socket_path(tmp_path, "zero-tail-gap")
+    with EventOutbox(tmp_path / "outbox.sqlite") as outbox:
+        outbox.commit_event(derived("boot-old", 900), permit_boot_change=False)
+        scripts = [
+            [
+                ack(
+                    "boot-new",
+                    replay_count=0,
+                    gap=True,
+                    requested_after_seq=900,
+                    latest_seq=0,
+                ),
+                event("boot-new", 1),
+            ]
+        ]
+        with CmuxSocketHarness(socket_path, scripts):
+            EventStreamResident(
+                source_instance_id=SOURCE,
+                client=UnixCmuxSocketClient(socket_path),
+                outbox=outbox,
+                marker_key=KEY,
+            ).run()
+
+        assert outbox.cursor(SOURCE) == EventCursor(SOURCE, "boot-new", 1)
+        assert {row["seq"] for row in outbox.snapshot_rows(SOURCE)} == {0}
+
+
 def test_socket_authentication_precedes_stream_subscription(tmp_path) -> None:
     socket_path = short_socket_path(tmp_path, "auth")
     scripts = [
@@ -291,6 +319,70 @@ def test_sensitive_prompt_preview_is_not_persisted(tmp_path) -> None:
     assert "private words" not in stored
     assert marker.text in stored
     assert '"message_length"' in stored
+
+
+def test_nested_safe_payload_values_are_not_persisted(tmp_path) -> None:
+    socket_path = short_socket_path(tmp_path, "nested-private")
+    scripts = [
+        [
+            ack(
+                "boot-private",
+                replay_count=0,
+                gap=False,
+                requested_after_seq=None,
+                latest_seq=1,
+            ),
+            event(
+                "boot-private",
+                1,
+                payload={"redacted_fields": [{"secret": "must not persist"}]},
+            ),
+        ]
+    ]
+    with EventOutbox(tmp_path / "outbox.sqlite") as outbox:
+        with CmuxSocketHarness(socket_path, scripts):
+            EventStreamResident(
+                source_instance_id=SOURCE,
+                client=UnixCmuxSocketClient(socket_path),
+                outbox=outbox,
+                marker_key=KEY,
+            ).run()
+        stored = outbox.outbox_rows(SOURCE)[0]["event_json"]
+
+    assert "must not persist" not in stored
+    assert "redacted_fields" not in stored
+
+
+@pytest.mark.parametrize("latest_seq", [True, -1])
+def test_malformed_slow_consumer_sequence_is_rejected(tmp_path, latest_seq) -> None:
+    socket_path = short_socket_path(tmp_path, f"bad-slow-{latest_seq}")
+    malformed = slow_consumer(1)
+    error = malformed["error"]
+    assert isinstance(error, dict)
+    error["latest_seq"] = latest_seq
+    scripts = [
+        [
+            ack(
+                "boot-slow",
+                replay_count=0,
+                gap=False,
+                requested_after_seq=None,
+                latest_seq=0,
+            ),
+            malformed,
+        ]
+    ]
+    with (
+        EventOutbox(tmp_path / "outbox.sqlite") as outbox,
+        CmuxSocketHarness(socket_path, scripts),
+        pytest.raises(StreamProtocolError, match="latest sequence is malformed"),
+    ):
+        EventStreamResident(
+            source_instance_id=SOURCE,
+            client=UnixCmuxSocketClient(socket_path),
+            outbox=outbox,
+            marker_key=KEY,
+        ).run()
 
 
 def test_oversized_event_frame_is_rejected(tmp_path) -> None:

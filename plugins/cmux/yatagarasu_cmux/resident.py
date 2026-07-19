@@ -74,7 +74,9 @@ class EventStreamResident:
 
                 if gap and remaining_replay == 0:
                     commands = self._resnapshot(
-                        ack, after_seq=after_seq, replay_count=0
+                        ack,
+                        cursor_seq=ack.resume.latest_seq,
+                        replay_count=0,
                     )
                     snapshot_commands.extend(commands)
 
@@ -92,7 +94,15 @@ class EventStreamResident:
                             raise StreamProtocolError(f"CMUX stream error: {code}")
                         slow_consumer = True
                         latest = error.get("latest_seq")
-                        disconnect_at_seq = latest if isinstance(latest, int) else None
+                        if (
+                            not isinstance(latest, int)
+                            or isinstance(latest, bool)
+                            or latest < 0
+                        ):
+                            raise StreamProtocolError(
+                                "slow_consumer latest sequence is malformed"
+                            )
+                        disconnect_at_seq = latest
                         break
                     if frame_type != "event":
                         raise StreamProtocolError("unexpected CMUX stream frame type")
@@ -113,7 +123,7 @@ class EventStreamResident:
                         if remaining_replay == 0 and gap:
                             commands = self._resnapshot(
                                 ack,
-                                after_seq=event.seq,
+                                cursor_seq=event.seq,
                                 replay_count=replay_seen,
                             )
                             snapshot_commands.extend(commands)
@@ -147,10 +157,9 @@ class EventStreamResident:
         )
 
     def _resnapshot(
-        self, ack: StreamAck, *, after_seq: int | None, replay_count: int
+        self, ack: StreamAck, *, cursor_seq: int, replay_count: int
     ) -> tuple[str, ...]:
         commands = self.client.snapshots()
-        cursor_seq = ack.resume.latest_seq if after_seq is None else after_seq
         self.outbox.record_resnapshot(
             EventCursor(self.source_instance_id, ack.boot_id, cursor_seq),
             snapshots=commands,

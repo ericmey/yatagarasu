@@ -31,6 +31,15 @@ _SAFE_PAYLOAD_KEYS = frozenset(
 )
 
 
+def _is_safe_payload_value(value: object) -> bool:
+    scalar_types = (str, int, float, bool, type(None))
+    if isinstance(value, scalar_types):
+        return True
+    return isinstance(value, list) and all(
+        isinstance(item, scalar_types) for item in value
+    )
+
+
 class StreamProtocolError(RuntimeError):
     """A socket frame violates the documented CMUX events protocol."""
 
@@ -143,8 +152,7 @@ class EventProjector:
             safe_payload = {
                 key: value
                 for key, value in payload.items()
-                if key in _SAFE_PAYLOAD_KEYS
-                and isinstance(value, (str, int, float, bool, list, type(None)))
+                if key in _SAFE_PAYLOAD_KEYS and _is_safe_payload_value(value)
             }
             preview = payload.get("message_preview")
             if isinstance(preview, str):
