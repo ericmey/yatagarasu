@@ -1,6 +1,7 @@
 import pytest
 from yatagarasu_cmux.journal import InjectionJournal, JournalState
 from yatagarasu_cmux.marker import extract, mint
+from yatagarasu_cmux.receipt_emitter import ReceiptEmitter
 
 
 def test_hook_011_restart_every_tracked_delivery_accountable(tmp_path):
@@ -89,15 +90,32 @@ def test_hook_011_restart_every_tracked_delivery_accountable(tmp_path):
         assert j2.get("d-5").state == JournalState.AMBIGUOUS
 
 
-@pytest.mark.skip(
-    reason="Y-CMUX-012 requires the receipt emitter implementation; see issue #28"
-)
 def test_hook_012_turn_completed_never_answered():
     """
     Y-CMUX-012 — harness.turn_completed -> only processed(completed)
     A bare turn-end does not prove answered / acknowledged / held / declined.
     """
-    pass
+    emitted = []
+
+    def fake_core_client(payload: dict) -> None:
+        emitted.append(payload)
+
+    emitter = ReceiptEmitter(core_client=fake_core_client)
+
+    # Fixture C: bare turn-end with no output
+    emitter.process_stop_event(session_id="s-123")
+
+    assert len(emitted) == 1
+    receipt = emitted[0]
+
+    # Assertion 1: evidence class is harness.turn_completed
+    assert receipt["evidence_class"] == "harness.turn_completed"
+
+    # Assertion 2: disposition is exactly "completed", NEVER answered or acknowledged
+    assert receipt["disposition"] == "completed"
+
+    # Assertion 3: proof method recorded correctly
+    assert receipt["proof_method"] == "cmux.event_bus.harness_hook_relay"
 
 
 def test_hook_013_signed_marker_forgery_rejected():
