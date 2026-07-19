@@ -39,7 +39,9 @@ class ReceiptEmitter:
         self._pending_prompt: SourceEventRef | None = None
         self._pending_marker: DeliveryMarker | None = None
 
-    def observe(self, event: SourceEventRef, payload: dict | None = None) -> None:
+    def observe(
+        self, event: SourceEventRef, payload: dict | None = None, observed_at: str = ""
+    ) -> None:
         """Process an event from the cmux event bus."""
         name = event.event_name
 
@@ -94,7 +96,7 @@ class ReceiptEmitter:
                 evidence_provider_id=self._provider_id,
                 evidence_class=EvidenceClass.HARNESS_TURN_COMPLETED,
                 proof_method="cmux.event_bus.harness_hook_relay",
-                observed_at="2026-07-18T21:00:00Z",  # In reality, we'd use a real timestamp
+                observed_at=observed_at,
                 source_event_id=event.source_event_id,
                 disposition=Disposition.COMPLETED,
                 proof=proof,

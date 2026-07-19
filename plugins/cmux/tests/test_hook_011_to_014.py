@@ -119,7 +119,7 @@ def test_hook_012_turn_completed_never_answered():
     stop_stray = SourceEventRef(
         "src", "boot", 4, "ev-4", "agent.hook.Stop", session_id="s-123"
     )
-    emitter.observe(stop_stray)
+    emitter.observe(stop_stray, observed_at="2026-07-18T21:05:00Z")
     assert len(emitted) == 0, "Stop with no preceding prompt MUST NOT emit a receipt"
 
     # Fixture B: Stray Stop from an unrelated session
@@ -139,7 +139,7 @@ def test_hook_012_turn_completed_never_answered():
     stop_wrong = SourceEventRef(
         "src", "boot", 5, "ev-5", "agent.hook.Stop", session_id="s-wrong"
     )
-    emitter.observe(stop_wrong)
+    emitter.observe(stop_wrong, observed_at="2026-07-18T21:05:00Z")
     assert len(emitted) == 0, (
         "Stray Stop from an unrelated session MUST NOT emit a receipt"
     )
@@ -148,7 +148,7 @@ def test_hook_012_turn_completed_never_answered():
     stop_correct = SourceEventRef(
         "src", "boot", 6, "ev-6", "agent.hook.Stop", session_id="s-123"
     )
-    emitter.observe(stop_correct)
+    emitter.observe(stop_correct, observed_at="2026-07-18T21:05:00Z")
     assert len(emitted) == 1, "Correlated Stop MUST emit exactly one receipt"
 
     receipt = emitted[0]
@@ -161,6 +161,7 @@ def test_hook_012_turn_completed_never_answered():
 
     # Assertion 3: proof method recorded correctly
     assert receipt.proof_method == "cmux.event_bus.harness_hook_relay"
+    assert receipt.observed_at == "2026-07-18T21:05:00Z"
 
     # Assertion 4: exact proof bundle is attached and correlated
     assert receipt.proof is not None
