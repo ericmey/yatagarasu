@@ -136,8 +136,11 @@ def _run_live_shaped_chain(tmp_path, delivery, wire_token, authoritative_marker)
         run = supervisor.run_once()
 
     assert run.inserted_event_count == 4
-    assert len(emitted) == 1
-    return emitted[0]
+    assert [receipt.evidence_class for receipt in emitted] == [
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+        EvidenceClass.HARNESS_TURN_COMPLETED,
+    ]
+    return emitted[-1]
 
 
 def test_live_shaped_frames_cross_resident_and_validate(tmp_path, delivery) -> None:
@@ -386,14 +389,20 @@ def test_restart_rebuilds_an_active_chain_before_stop_arrives(
     with CmuxSocketHarness(socket_path, [accepted_frames]):
         first = supervisor().run_once()
     assert first.inserted_event_count == 3
-    assert emitted == []
+    assert [receipt.evidence_class for receipt in emitted] == [
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED
+    ]
 
     with CmuxSocketHarness(socket_path, [stop_frames]):
         second = supervisor().run_once()
     assert second.reconnect_after_seq == (3,)
-    assert len(emitted) == 1
-    assert emitted[0].proof is not None
-    assert [event.event_name for event in emitted[0].proof.source_events] == [
+    assert [receipt.evidence_class for receipt in emitted] == [
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+        EvidenceClass.HARNESS_TURN_COMPLETED,
+    ]
+    assert emitted[-1].proof is not None
+    assert [event.event_name for event in emitted[-1].proof.source_events] == [
         "surface.input_sent",
         "workspace.prompt.submitted",
         "agent.hook.UserPromptSubmit",
@@ -491,8 +500,10 @@ def test_literal_duplicate_capture_is_normalized_before_emission(delivery) -> No
     ]
 
 
-def test_literal_duplicate_capture_emits_one_valid_receipt(tmp_path, delivery) -> None:
-    """The exact captured sequence must validate without a synthetic fixture."""
+def test_literal_duplicate_capture_emits_two_valid_receipt_stages(
+    tmp_path, delivery
+) -> None:
+    """The exact capture must emit both valid stages without a synthetic fixture."""
     authority = MarkerAuthority(REAL_KEY)
     marker = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
     source_events = _captured_duplicate_frames(authority.encode(marker))
@@ -528,8 +539,11 @@ def test_literal_duplicate_capture_emits_one_valid_receipt(tmp_path, delivery) -
         run = supervisor.run_once()
 
     assert run.inserted_event_count == 8
-    assert len(emitted) == 1
-    receipt = emitted[0]
+    assert [item.evidence_class for item in emitted] == [
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+        EvidenceClass.HARNESS_TURN_COMPLETED,
+    ]
+    receipt = emitted[-1]
     assert receipt.proof is not None
     assert [item.seq for item in receipt.proof.source_events] == [
         25573,
@@ -590,8 +604,11 @@ def test_literal_duplicate_capture_preserves_broken_signature(
     with CmuxSocketHarness(socket_path, [frames]):
         supervisor.run_once()
 
-    assert len(emitted) == 1
-    receipt = emitted[0]
+    assert [item.evidence_class for item in emitted] == [
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+        EvidenceClass.HARNESS_TURN_COMPLETED,
+    ]
+    receipt = emitted[-1]
     assert receipt.proof is not None
     assert receipt.proof.source_events[1].marker_signature == forged.signature
     assert (
@@ -757,7 +774,7 @@ def _phase_ordered_live_frames(wire_token: str) -> list[dict[str, object]]:
     return frames
 
 
-def test_phase_ordered_live_capture_normalizes_to_one_valid_receipt(
+def test_phase_ordered_live_capture_normalizes_to_two_valid_receipt_stages(
     tmp_path, delivery
 ) -> None:
     """SEV-1 reopen: phase duplication/order prevents a live proof chain."""
@@ -834,8 +851,11 @@ def test_phase_ordered_live_capture_normalizes_to_one_valid_receipt(
         run = supervisor.run_once()
 
     assert run.inserted_event_count == 14
-    assert len(emitted) == 1
-    receipt = emitted[0]
+    assert [item.evidence_class for item in emitted] == [
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+        EvidenceClass.HARNESS_TURN_COMPLETED,
+    ]
+    receipt = emitted[-1]
     assert receipt.proof is not None
     assert [item.seq for item in receipt.proof.source_events] == [
         29727,
