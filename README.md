@@ -61,17 +61,25 @@ evidence at all.
 
 [MIT](LICENSE). Use it, fork it, ship it.
 
-## Status, plainly
+## Quickstart — and what you cannot do yet
 
-**Nothing here runs yet.** There is no entry point, no service, and no
-deployment — the modules have never touched a live socket. What exists is a
-receipt reducer, a session-transport injector, a durable injection journal, and
-an acceptance suite that is honest about its own gaps: tests that cannot yet be
-proven are **skipped with a tracked issue**, never quietly passed.
+**Pre-alpha. There is no running service, no entry point, and no deployment.**
+The modules here — the core schema and receipt reducer, the CMUX
+session-transport injector, the durable injection journal — have never touched a
+live socket. You cannot start this as a daemon today.
 
-The only thing you can run today is the test suite:
+The only honest, runnable component is the **test suite**, which exercises the
+state machine and the plugin contracts. It is also deliberately honest about its
+own gaps: hooks that cannot yet be proven are **skipped with a tracked issue**,
+never quietly passed. A green run reports what it actually verified.
 
 ```bash
-make install   # dev deps + the four editable subpackages
+git clone https://github.com/ericmey/yatagarasu.git
+cd yatagarasu
+
+make install   # dev dependencies + the four editable subpackages
 make check     # exactly what CI runs: lint, format, tests
 ```
+
+Requires Python 3.11 or newer. `make install` uses `python -m pip` — no other
+tooling needed.
