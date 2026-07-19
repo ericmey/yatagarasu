@@ -35,7 +35,12 @@ class BusyEnterBehavior(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class HarnessProfile:
-    """The exact text/key pair that requests a non-interrupting next turn."""
+    """The exact text/key pair that requests a non-interrupting next turn.
+
+    The conditions under which a profile is proven must be the conditions
+    under which it runs, so load-bearing timing belongs in this production
+    contract rather than only in a canary or test harness.
+    """
 
     kind: HarnessKind
     submit_keys: tuple[str, ...]
