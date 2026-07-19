@@ -93,9 +93,17 @@ def test_every_subcommand_is_reachable():
         assert build_parser().parse_args([command]).command == command
 
 
-def test_doctor_reports_configuration_without_starting_anything(config, capsys):
+def test_doctor_reports_configuration_without_minting_the_key(config, capsys):
     """Doctor must be safe to run at any time, so it may not mint the key: doing
-    so would make a read-only diagnostic quietly change durable state."""
+    so would make a diagnostic quietly change durable state.
+
+    Note what is *not* claimed here. Doctor is not side-effect free — every
+    command goes through ``runtime.load()``, which creates the state directory.
+    The first draft of the CLI docstring said doctor would "touch nothing", which
+    was a claim broader than the code; Copilot caught it on PR #45. Creating an
+    empty directory is benign, minting a signing key is not, and the honest line
+    is between them rather than at "nothing".
+    """
     args = build_parser().parse_args(
         [
             "doctor",

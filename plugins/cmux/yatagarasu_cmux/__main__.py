@@ -3,8 +3,10 @@
 Three subcommands, in the order an operator actually needs them:
 
 ``doctor``
-    Resolve and validate configuration, print it, touch nothing. The first thing
-    to run on a new host, and safe to run at any time.
+    Resolve and validate configuration and print it. The first thing to run on a
+    new host, and safe to run at any time. It creates the state directory if it
+    is absent — ``runtime.load()`` does that for every command — but it starts
+    nothing, connects to nothing, and does not mint the marker key.
 
 ``smoke``
     Prove the resident can reach a live cmux and read its event stream. Read-only:
@@ -47,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     for name, help_text in (
-        ("doctor", "validate configuration and print it; changes nothing"),
+        ("doctor", "validate configuration and print it; starts nothing"),
         ("smoke", "read the live event stream to prove connectivity; never injects"),
         ("run", "supervise the resident"),
     ):
