@@ -66,18 +66,22 @@ class _Transport:
 
 
 class _Observer:
-    """Yields a scripted event chain exactly once.
+    """Yields a scripted event chain exactly once, like the host bus.
 
-    The list is fully consumed within the timeout window; once empty,
-    the bus has nothing more to deliver and the injector classifies
-    the shortfall.
+    The list is fully consumed within the timeout window on the first
+    call; once empty, the bus has nothing more to deliver and the
+    injector classifies the shortfall. A second call would see an
+    empty event list and the injector would classify as NOT_SUBMITTED —
+    matching the production semantics where the bus does not replay
+    events on re-subscribe.
     """
 
     def __init__(self, events: list[str]) -> None:
         self._events = list(events)
 
     def observe(self, marker: Marker, timeout_s: float) -> Iterable[str]:
-        yield from self._events
+        while self._events:
+            yield self._events.pop(0)
 
 
 def _build_injector(events: list[str], transport: _Transport | None = None) -> Injector:
@@ -172,7 +176,13 @@ def test_y_cmux_002_marker_is_recoverable_from_sent_text_on_unknown() -> None:
     reconcile the marker against the bus evidence at recovery time.
     """
     transport = _Transport()
-    inj = _build_injector(events=[EVENT_INPUT_SENT], transport=transport)
+    inj = Injector(
+        resolver=_Resolver(),
+        transport=transport,
+        observer=_Observer([EVENT_INPUT_SENT]),
+        signing_key=SIGNING_KEY,
+        submit_timeout_s=0.05,
+    )
 
     result = inj.deliver("peer", "d-004", "payload body")
 
@@ -195,4 +205,45 @@ def test_y_cmux_002_marker_is_recoverable_from_sent_text_on_unknown() -> None:
         f"recovered marker must carry the original delivery_id; "
         f"got {recovered.delivery_id!r}, expected 'd-004'. "
         "If the marker text does not match the key, the signer is wrong."
+    )
+
+
+def test_y_cmux_002_observer_consumes_event_chain_on_first_call() -> None:
+    """The fake observer's events are consumed; a second call sees empty.
+
+    This test asserts the docstring claim — "exactly once" — matches
+    behaviour. A naïve `yield from self._events` would replay the chain
+    on every call, masking a real bug in production where the bus does
+    not re-send events on re-subscribe. The pop() loop enforces
+    consumption; the second call sees an empty list and the injector
+    classifies as NOT_SUBMITTED.
+    """
+    transport = _Transport()
+    observer = _Observer([EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED])
+    inj = Injector(
+        resolver=_Resolver(),
+        transport=transport,
+        observer=observer,
+        signing_key=SIGNING_KEY,
+        submit_timeout_s=0.05,
+    )
+
+    first = inj.deliver("peer", "d-005", "first body")
+    assert first.outcome is SubmitOutcome.SUBMITTED, (
+        "first call must see both events; the chain is still populated"
+    )
+
+    # The transport was used for the first send; reset it so we can
+    # observe the second-call outcome without that side-channel noise.
+    transport.sent.clear()
+    transport.submitted.clear()
+
+    second = inj.deliver("peer", "d-006", "second body")
+    # The observer's event chain has been consumed; the second call sees
+    # an empty list, the injector classifies as NOT_SUBMITTED.
+    assert second.outcome is SubmitOutcome.NOT_SUBMITTED, (
+        "second call must see an empty event chain (consumed-on-first-call) "
+        "and classify as NOT_SUBMITTED, NOT SUBMITTED. If this fails with "
+        "SUBMITTED, the fake is replaying events on every call — a regression "
+        "of the bus-replay shape we are trying to test against."
     )

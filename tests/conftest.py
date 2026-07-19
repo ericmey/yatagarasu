@@ -7,9 +7,9 @@ one is an item the test session reports as green but actually did not
 exercise. A skip that lands without a conscious decision is a quiet
 false-pass.
 
-Floor defaults to 0. Adding a skip requires updating the floor AND
-adding a justification comment that says why the skip is acceptable
-for this run. The floor is overridden by the env var
+The floor default lives in ``_DEFAULT_FLOOR`` below. Raising or
+lowering the default is a deliberate act with rationale documented
+inline; the floor is overridden by the env var
 ``YATAGARASU_SKIP_FLOOR`` for the rare case where a skip is justified
 during a transitional state (e.g. a fixture is in flight).
 
@@ -59,7 +59,9 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=int(os.environ.get(_SKIP_FLOOR_ENV, _DEFAULT_FLOOR)),
         help=(
             "Maximum number of pytest.skip() invocations permitted in a "
-            "test run. Default 0; raise only with documented justification."
+            "test run. Default tracks the count of honestly-tracked "
+            "skips (see _DEFAULT_FLOOR above); raise only with documented "
+            "justification."
         ),
     )
 
@@ -88,9 +90,11 @@ def pytest_sessionfinish(
     skipped = len(rep.stats.get("skipped", []))
     xfailed = len(rep.stats.get("xfailed", []))
     xpassed = len(rep.stats.get("xpassed", []))
-    # Stash the counts on the session so pytest_terminal_summary
-    # can print them in the same form without re-counting.
-    session._yatagarasu_skip_counts = (skipped, xfailed, xpassed, floor)
+    # Stash the counts on the terminal reporter so pytest_terminal_summary
+    # can read them in the same form without re-counting.
+    # (A previous revision stashed on `session` instead of `terminalreporter`
+    # and pytest_terminal_summary never read them — the dead-cache bug.)
+    rep._yatagarasu_skip_counts = (skipped, xfailed, xpassed, floor)
     if skipped > floor:
         # Setting exitstatus here is what fails the CI check job.
         # The terminal summary hook below prints the human-readable

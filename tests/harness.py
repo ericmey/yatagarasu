@@ -94,8 +94,21 @@ class ObservationCapture:
     inject_outcomes: dict[str, str] = dataclasses.field(default_factory=dict)
 
     def reset(self) -> None:
+        """Restore every field to its declared default.
+
+        ``dataclasses.fields(cls).default`` is ``MISSING`` for fields
+        declared with ``default_factory=...``, so a naive
+        ``setattr(self, field.name, field.default)`` would assign the
+        MISSING sentinel to lists/dicts. The correct shape is:
+        prefer ``field.default_factory()`` when the factory is set,
+        fall back to ``field.default`` for fields with a literal default.
+        """
         for field in dataclasses.fields(self):
-            setattr(self, field.name, field.default)
+            if field.default_factory is not dataclasses.MISSING:
+                value = field.default_factory()
+            else:
+                value = field.default
+            setattr(self, field.name, value)
 
 
 # -- the harness context manager -----------------------------------------
@@ -163,7 +176,10 @@ class Harness:
         WRONG response is to assume-submitted on the `surface.input_sent`
         alone, OR to revert-on-UNKNOWN. The plugin must distinguish.
         """
-        object.__setattr__(self.knob, "suppress_composer_submit", on)
+        # Use dataclasses.replace — it produces a new instance instead
+        # of mutating the frozen _KnobState via object.__setattr__.
+        # Bypassing frozen bypasses the immutability contract.
+        self.knob = dataclasses.replace(self.knob, suppress_composer_submit=on)
         ...
 
     def restart_cmux(self, *, boot_id: str | None = None) -> None:
