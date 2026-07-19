@@ -179,42 +179,72 @@ def test_y_cmux_003_no_surface_id_cache_in_plugin_source() -> None:
     The plugin must address by identity, never cache the resolved
     handle. Future regressions where someone adds a `self._surface`
     or a `functools.lru_cache` on the resolver will be caught here.
+
+    Implementation notes (Copilot round-2 fixes for this hook):
+    - rglob("*.py") walks every subpackage under plugins/cmux/
+      yatagarasu_cmux/ — glob("*.py") would miss future subpackages.
+    - tokenize.generate_tokens gives a token-type stream; we skip
+      tokens inside COMMENT and STRING (including docstrings) at the
+      source rather than by inspecting per-line prefix characters.
+      The previous "skip lines starting with # or triple quotes"
+      check missed banned patterns that appear on a LATER line of a
+      multi-line docstring or inside a regular string literal.
     """
+    import tokenize
+
     plugin_root = Path(__file__).resolve().parents[1]  # plugins/cmux
     src_root = plugin_root / "yatagarasu_cmux"
 
-    # Per-file scan; the test is fail-fast on the first violation.
-    for src_path in sorted(src_root.glob("*.py")):
-        text = src_path.read_text(encoding="utf-8")
-        # The marker.text property is a string literal that includes
-        # "surface" in the bus event names; filter to identifiers that
-        # suggest caching shape, not string literals.
-        banned_patterns = [
-            (
-                r"\bself\s*\.\s*_(?:surface|surface_id|surface_handle)\b",
-                "module/instance-level surface cache (banned)",
-            ),
-            (
-                r"\blru_cache\s*\(",
-                "lru_cache on the resolver (banned — surface must not be cached)",
-            ),
-            (
-                r"\bttl\s*=\s*[1-9]\d*",
-                "TTL > 0 on a binding map (banned — surface is ephemeral)",
-            ),
-        ]
-        for pattern, why in banned_patterns:
-            for match in re.finditer(pattern, text):
-                # Permit the patterns inside the resolver Protocol's
-                # docstring (which describes what the resolver does, not
-                # what the plugin caches).
-                line_no = text[: match.start()].count("\n") + 1
-                line = text.splitlines()[line_no - 1]
-                if line.strip().startswith(("#", '"""', "'''")):
-                    continue
+    banned_patterns = [
+        (
+            r"\bself\s*\.\s*_(?:surface|surface_id|surface_handle)\b",
+            "module/instance-level surface cache (banned)",
+        ),
+        (
+            r"\blru_cache\s*\(",
+            "lru_cache on the resolver (banned — surface must not be cached)",
+        ),
+        (
+            r"\bttl\s*=\s*[1-9]\d*",
+            "TTL > 0 on a binding map (banned — surface is ephemeral)",
+        ),
+    ]
+    banned_re = re.compile("|".join(f"({pat})" for pat, _ in banned_patterns))
+    reason_by_index = {i: why for i, (_, why) in enumerate(banned_patterns)}
+
+    # Walk every Python file under the plugin source, recursively, so
+    # future subpackages are scanned too.
+    for src_path in sorted(src_root.rglob("*.py")):
+        # Skip __pycache__ and similar build artifacts that may exist
+        # in the source tree after a local run.
+        if "__pycache__" in src_path.parts:
+            continue
+        with src_path.open(encoding="utf-8") as f:
+            try:
+                tokens = list(tokenize.generate_tokens(f.readline))
+            except tokenize.TokenError as exc:
                 pytest.fail(
-                    f"{src_path.name}:{line_no}: banned surface-id caching pattern. "
-                    f"Pattern: {pattern!r}; Why: {why}. "
-                    f"Line: {line.strip()!r}. "
+                    f"{src_path}: tokenize failed ({exc}); the source file is "
+                    "not valid Python and the static scan cannot proceed."
+                )
+
+        # tokenize produces a stream of (token-type, token-string, ...)
+        # tuples. COMMENT and STRING tokens are skipped at the source;
+        # everything else is checked against the banned patterns.
+        for tok_type, tok_string, (srow, _), _, _ in tokens:
+            if tok_type in (tokenize.COMMENT, tokenize.STRING):
+                continue
+            for match in banned_re.finditer(tok_string):
+                # Determine which alternative matched (re groups are
+                # numbered in declaration order, with the full match in
+                # group 0 and each alternative in its own group).
+                idx = next(
+                    i for i in range(1, len(banned_patterns) + 1) if match.group(i)
+                )
+                pytest.fail(
+                    f"{src_path.name}:{srow}: banned surface-id caching pattern. "
+                    f"Pattern: {banned_patterns[idx - 1][0]!r}; "
+                    f"Why: {reason_by_index[idx - 1]}. "
+                    f"Token: {tok_string!r}. "
                     "The plugin must address by identity on every send."
                 )
