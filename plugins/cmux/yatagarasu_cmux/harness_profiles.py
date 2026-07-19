@@ -38,7 +38,7 @@ class HarnessProfile:
     """The exact text/key pair that requests a non-interrupting next turn."""
 
     kind: HarnessKind
-    submit_key: str
+    submit_keys: tuple[str, ...]
     busy_enter_behavior: BusyEnterBehavior
     text_prefix: str = ""
 
@@ -52,17 +52,21 @@ class HarnessProfile:
 _PROFILES = {
     HarnessKind.CLAUDE_CODE: HarnessProfile(
         kind=HarnessKind.CLAUDE_CODE,
-        submit_key="enter",
+        submit_keys=("enter",),
         busy_enter_behavior=BusyEnterBehavior.QUEUE,
     ),
     HarnessKind.CODEX: HarnessProfile(
         kind=HarnessKind.CODEX,
-        submit_key="tab",
+        # Live Codex 0.144.5 proof: Tab queues while busy but does not submit
+        # while idle. Enter submits while idle but steers while busy. Tab then
+        # Enter is state-independent: busy Tab consumes the text into the queue
+        # and the empty Enter is inert; idle Tab is inert and Enter submits.
+        submit_keys=("tab", "enter"),
         busy_enter_behavior=BusyEnterBehavior.STEER,
     ),
     HarnessKind.HERMES: HarnessProfile(
         kind=HarnessKind.HERMES,
-        submit_key="enter",
+        submit_keys=("enter",),
         busy_enter_behavior=BusyEnterBehavior.INTERRUPT,
         text_prefix="/queue ",
     ),

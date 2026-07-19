@@ -26,7 +26,7 @@ from yatagarasu_core import Delivery
 from yatagarasu_core.proofs import DeliveryMarker, MarkerAuthority
 
 from .harness_profiles import HarnessKind, profile_for
-from .marker import MarkerError, redact
+from .marker import MarkerError, encode_short, redact
 from .outcome import SubmitOutcome, SubmitResult
 
 log = logging.getLogger(__name__)
@@ -118,7 +118,7 @@ class Injector:
         # unknown profile before resolving or touching any terminal surface.
         try:
             profile = profile_for(harness)
-            encoded_marker = self.marker_authority.encode(marker)
+            encoded_marker = encode_short(marker)
             text = profile.render(f"{encoded_marker} {body}")
         except ValueError as exc:
             return SubmitResult(
@@ -151,7 +151,8 @@ class Injector:
 
         try:
             self.transport.send_text(surface, text)
-            self.transport.submit(surface, profile.submit_key)
+            for key in profile.submit_keys:
+                self.transport.submit(surface, key)
         except Exception as exc:
             # The send may have partially applied. We cannot prove it did not.
             log.warning(

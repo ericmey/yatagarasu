@@ -18,6 +18,7 @@ from yatagarasu_cmux import (
     EventProjector,
     EventStreamResident,
     UnixCmuxSocketClient,
+    encode_short,
 )
 from yatagarasu_cmux.runtime import RuntimeConfig
 from yatagarasu_cmux.supervisor import Supervisor
@@ -458,7 +459,7 @@ def test_literal_duplicate_capture_preserves_broken_signature(
     attacker = MarkerAuthority(ATTACKER_KEY)
     authoritative = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
     forged = attacker.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
-    source_events = _captured_duplicate_frames(attacker.encode(forged))
+    source_events = _captured_duplicate_frames(encode_short(forged))
     socket_path = short_socket_path(tmp_path, "literal-forged-capture")
     config = RuntimeConfig(
         socket_path=socket_path,
@@ -602,3 +603,155 @@ def test_interleaved_workspaces_keep_independent_receipt_buffers(tmp_path) -> No
         delivery_a.delivery_id,
         delivery_b.delivery_id,
     }
+
+
+def _phase_ordered_live_frames(wire_token: str) -> list[dict[str, object]]:
+    """Literal second live capture: hooks precede prompts and carry phases."""
+    session = "codex-019f7b4e-b764-75c1-b9af-b02bfeff98eb"
+    prompt = {"message_preview": f"{wire_token} body"[:240]}
+
+    def hook(seq, name, phase):
+        return event(
+            "boot-live-phase",
+            seq,
+            name=name,
+            payload={
+                "session_id": session,
+                "hook_event_name": name.rsplit(".", 1)[-1],
+                "phase": phase,
+            },
+        )
+
+    frames = [
+        event("boot-live-phase", 29727, name="surface.input_sent"),
+        hook(29770, "agent.hook.UserPromptSubmit", "received"),
+        event(
+            "boot-live-phase",
+            29772,
+            name="workspace.prompt.submitted",
+            payload=prompt,
+        ),
+        hook(29774, "agent.hook.UserPromptSubmit", "completed"),
+        hook(29778, "agent.hook.UserPromptSubmit", "received"),
+        event(
+            "boot-live-phase",
+            29780,
+            name="workspace.prompt.submitted",
+            payload=prompt,
+        ),
+        hook(29781, "agent.hook.UserPromptSubmit", "completed"),
+        hook(29785, "agent.hook.UserPromptSubmit", "received"),
+        event(
+            "boot-live-phase",
+            29787,
+            name="workspace.prompt.submitted",
+            payload=prompt,
+        ),
+        hook(29788, "agent.hook.UserPromptSubmit", "completed"),
+        hook(29796, "agent.hook.Stop", "received"),
+        hook(29798, "agent.hook.Stop", "completed"),
+        hook(29804, "agent.hook.Stop", "received"),
+        hook(29806, "agent.hook.Stop", "completed"),
+    ]
+    for frame in frames:
+        frame["occurred_at"] = OBSERVED_AT
+    return frames
+
+
+def test_phase_ordered_live_capture_normalizes_to_one_valid_receipt(
+    tmp_path, delivery
+) -> None:
+    """SEV-1 reopen: phase duplication/order prevents a live proof chain."""
+    authority = MarkerAuthority(REAL_KEY)
+    marker = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
+
+    class Resolver:
+        def resolve(self, identity):
+            return "surface:live"
+
+    class Transport:
+        def __init__(self):
+            self.text = ""
+
+        def send_text(self, surface, text):
+            self.text = text
+
+        def submit(self, surface, key):
+            pass
+
+    class Observer:
+        def observe(self, marker, timeout_s):
+            yield "surface.input_sent"
+            yield "workspace.prompt.submitted"
+
+    from yatagarasu_cmux import Injector
+    from yatagarasu_cmux.harness_profiles import HarnessKind
+
+    transport = Transport()
+    Injector(
+        resolver=Resolver(),
+        transport=transport,
+        observer=Observer(),
+        marker_authority=authority,
+    ).deliver(
+        "live",
+        delivery,
+        "body",
+        ISSUED_AT,
+        EXPIRES_AT,
+        harness=HarnessKind.CODEX,
+    )
+    token = transport.text.split(" ", 1)[0]
+    source_events = _phase_ordered_live_frames(token)
+    socket_path = short_socket_path(tmp_path, "phase-ordered-live")
+    config = RuntimeConfig(
+        socket_path=socket_path,
+        state_dir=tmp_path / "phase-ordered-state",
+        password=None,
+        source_instance_id=SOURCE_INSTANCE,
+    )
+    config.state_dir.mkdir()
+    emitted = []
+    supervisor = Supervisor.with_receipts(
+        config,
+        core_client=emitted.append,
+        provider_id=PROVIDER_ID,
+        delivery_lookup=lambda delivery_id: (
+            (delivery, marker) if delivery_id == delivery.delivery_id else None
+        ),
+    )
+    frames = [
+        ack(
+            "boot-live-phase",
+            replay_count=0,
+            gap=False,
+            requested_after_seq=None,
+            latest_seq=29806,
+        ),
+        *source_events,
+    ]
+
+    with CmuxSocketHarness(socket_path, [frames]):
+        run = supervisor.run_once()
+
+    assert run.inserted_event_count == 14
+    assert len(emitted) == 1
+    receipt = emitted[0]
+    assert receipt.proof is not None
+    assert [item.seq for item in receipt.proof.source_events] == [
+        29727,
+        29772,
+        29774,
+        29798,
+    ]
+    assert (
+        validate_session_proof(
+            proof=receipt.proof,
+            delivery=delivery,
+            evidence_class=receipt.evidence_class,
+            registration=_registration(),
+            marker_authority=authority,
+            observed_at=receipt.observed_at,
+        )
+        is None
+    )
