@@ -67,9 +67,12 @@ _PROFILES = {
         # while idle. Enter submits while idle but steers while busy. Tab then
         # Enter is state-independent: busy Tab consumes the text into the queue
         # and the empty Enter is inert; idle Tab is inert and Enter submits.
+        # 0.1 s was the measured floor on one disposable, lightly loaded seat.
+        # The 0.4 s production margin carries over agent-bridge's empirically
+        # tuned same-substrate settle, which survived weeks across four seats.
         submit_keys=("tab", "enter"),
         busy_enter_behavior=BusyEnterBehavior.STEER,
-        inter_key_delay_s=0.1,
+        inter_key_delay_s=0.4,
     ),
     HarnessKind.HERMES: HarnessProfile(
         kind=HarnessKind.HERMES,
