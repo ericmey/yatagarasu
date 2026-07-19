@@ -57,8 +57,29 @@ evidence at all.
 | `tests/` | acceptance suite |
 | `docs/` | architecture, design records, decisions |
 
+## Quickstart & Installation
+
+**WARNING:** Yatagarasu is currently in Pre-Alpha. **There is no running service, no entry point, and no production state.** The code in this repository consists of the core schema, the receipt reducer, and the CMUX plugin, but it cannot be "started" as a daemon yet. 
+
+The only honest, runnable component of this repository today is the **test suite**, which proves the state machine and plugin contracts against the architectural design.
+
+If you wish to inspect the codebase and run the test suite yourself:
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/ericmey/yatagarasu.git
+cd yatagarasu
+
+# 2. Install dependencies (requires uv and Python >= 3.11)
+make install
+
+# 3. Run the test suite and linters
+make check
+```
+
+*Note: `make install` uses `uv` to manage the virtual environment and installs the core and plugins as editable subpackages.*
+
 ## Licensing
 
-Not yet chosen. Until a LICENSE file exists, default copyright applies and no
-rights are granted. This repository is public for review tooling and
-transparency, not yet as an open-source offering.
+**Status: Proprietary / All Rights Reserved.**
+The repository is public for visibility, but no open-source license has been granted. Eric is currently deciding on the final license (e.g., Apache-2.0 or MIT). Until the `LICENSE` file is committed, you may read the code, but you may not use, modify, or distribute it.
