@@ -8,6 +8,7 @@ not do was tell the truth when it did not know.
 from __future__ import annotations
 
 import pytest
+from yatagarasu_cmux.harness_profiles import HarnessKind
 from yatagarasu_cmux.injector import (
     EVENT_INPUT_SENT,
     EVENT_PROMPT_SUBMITTED,
@@ -40,7 +41,7 @@ class FakeResolver:
 class FakeTransport:
     def __init__(self, fail_on_send: bool = False) -> None:
         self.sent: list[tuple[str, str]] = []
-        self.submitted: list[str] = []
+        self.submitted: list[tuple[str, str]] = []
         self.fail_on_send = fail_on_send
 
     def send_text(self, surface: str, text: str) -> None:
@@ -48,8 +49,8 @@ class FakeTransport:
             raise OSError("socket closed")
         self.sent.append((surface, text))
 
-    def submit(self, surface: str) -> None:
-        self.submitted.append(surface)
+    def submit(self, surface: str, key: str) -> None:
+        self.submitted.append((surface, key))
 
 
 class FakeObserver:
@@ -71,12 +72,24 @@ def build(handles=("surface:7",), events=None, transport=None):
     )
 
 
-def _deliver(inj: Injector, delivery_id: str):
+def _deliver(
+    inj: Injector,
+    delivery_id: str,
+    *,
+    identity: str = "peer",
+    body: str = "hello",
+    harness: HarnessKind | str = HarnessKind.CLAUDE_CODE,
+):
     delivery = Delivery(
         "ev", delivery_id, "attempt", "b-1", "rec", DeliveryMode.SESSION_BOUND
     )
     return inj.deliver(
-        "peer", delivery, "hello", "2026-07-19T20:00:00Z", "2026-07-19T20:05:00Z"
+        identity,
+        delivery,
+        body,
+        "2026-07-19T20:00:00Z",
+        "2026-07-19T20:05:00Z",
+        harness=harness,
     )
 
 
@@ -124,7 +137,7 @@ def test_no_events_at_all_is_a_clean_negative():
 
 def test_unresolvable_identity_is_visible_not_silent():
     inj = build(handles=())
-    result = _deliver(inj, "d-5")
+    result = _deliver(inj, "d-5", identity="ghost")
 
     assert result.outcome is SubmitOutcome.NOT_SUBMITTED
     assert "unresolved" in result.detail
@@ -195,6 +208,47 @@ def test_marker_is_embedded_and_recoverable():
     assert found is not None
     assert found.delivery_id == "d-10"
     assert "hello" in text
+
+
+@pytest.mark.parametrize(
+    ("harness", "prefix", "submit_key"),
+    [
+        (HarnessKind.CLAUDE_CODE, "ygr1.", "enter"),
+        (HarnessKind.CODEX, "ygr1.", "tab"),
+        (HarnessKind.HERMES, "/queue ygr1.", "enter"),
+    ],
+)
+def test_injector_applies_explicit_harness_profile(harness, prefix, submit_key):
+    transport = FakeTransport()
+    inj = Injector(
+        resolver=FakeResolver(["surface:profile"]),
+        transport=transport,
+        observer=FakeObserver([EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED]),
+        marker_authority=MarkerAuthority(KEY),
+    )
+
+    result = _deliver(inj, "d-profile", body="the body", harness=harness)
+
+    assert result.outcome is SubmitOutcome.SUBMITTED
+    assert transport.sent[0][1].startswith(prefix)
+    assert transport.submitted == [("surface:profile", submit_key)]
+
+
+def test_unsupported_harness_is_clean_negative_without_terminal_effect():
+    transport = FakeTransport()
+    inj = Injector(
+        resolver=FakeResolver(["surface:profile"]),
+        transport=transport,
+        observer=FakeObserver([]),
+        marker_authority=MarkerAuthority(KEY),
+    )
+
+    result = _deliver(inj, "d-unknown", body="body", harness="unknown")
+
+    assert result.outcome is SubmitOutcome.NOT_SUBMITTED
+    assert "unsupported harness" in result.detail
+    assert transport.sent == []
+    assert transport.submitted == []
 
 
 def test_forged_marker_is_rejected():
@@ -313,7 +367,12 @@ def test_bad_delivery_id_returns_verdict_not_exception():
         DeliveryMode.SESSION_BOUND,
     )
     result = inj.deliver(
-        "peer", delivery, "hello", "2026-07-19T20:00:00Z", "2026-07-19T20:05:00Z"
+        "peer",
+        delivery,
+        "hello",
+        "2026-07-19T20:00:00Z",
+        "2026-07-19T20:05:00Z",
+        harness=HarnessKind.CLAUDE_CODE,
     )
 
     assert result.outcome is SubmitOutcome.NOT_SUBMITTED
