@@ -291,17 +291,17 @@ def test_hook_013_signed_marker_forgery_rejected():
     )
     assert marker is not None
     encoded_marker = authority.encode(marker)
-    assert extract(None, encoded_marker) is not None
+    assert extract(encoded_marker) is not None
 
     # Fixture A - Forged Marker: tampered signature
     # Since it's base64 encoded now, we'll just corrupt the payload to test extraction failure
     forged_text = encoded_marker[:-10] + "0" * 10
-    assert extract(None, forged_text) is None, "Forged marker must be rejected"
+    assert extract(forged_text) is None, "Forged marker must be rejected"
 
     # Fixture C/D - Copied/Stale Marker
     # Handled at the core binding level, but local extraction requires exact text
     tampered_id = "ygr1.tampered"
-    extracted = extract(None, tampered_id)
+    extracted = extract(tampered_id)
     assert extracted is None, "Tampered marker should fail decoding"
 
     # Empty-key misconfiguration is handled by MarkerAuthority construction in core,

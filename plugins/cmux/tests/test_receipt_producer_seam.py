@@ -208,7 +208,6 @@ def test_receipt_sink_failure_does_not_advance_the_stream_cursor(tmp_path) -> No
                 source_instance_id=SOURCE_INSTANCE,
                 client=UnixCmuxSocketClient(socket_path),
                 outbox=outbox,
-                marker_key=b"legacy-projector-key",
                 receipt_producer=FailingProducer(),
             )
             with pytest.raises(RuntimeError, match="receipt sink unavailable"):
@@ -364,7 +363,6 @@ def test_literal_duplicate_capture_is_normalized_before_emission(delivery) -> No
     marker = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
     projector = EventProjector(
         source_instance_id=SOURCE_INSTANCE,
-        marker_key=b"unused-projection-key",
     )
     observed: list[tuple[str, int]] = []
 

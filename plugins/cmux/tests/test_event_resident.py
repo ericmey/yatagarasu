@@ -150,7 +150,6 @@ def test_gap_processes_replay_then_snapshots_on_separate_connections(tmp_path) -
                 source_instance_id=SOURCE,
                 client=UnixCmuxSocketClient(socket_path),
                 outbox=outbox,
-                marker_key=KEY,
             ).run()
 
         assert run.replay_event_count == 2
@@ -195,7 +194,6 @@ def test_zero_tail_gap_uses_new_boot_latest_sequence(tmp_path) -> None:
                 source_instance_id=SOURCE,
                 client=UnixCmuxSocketClient(socket_path),
                 outbox=outbox,
-                marker_key=KEY,
             ).run()
 
         assert outbox.cursor(SOURCE) == EventCursor(SOURCE, "boot-new", 1)
@@ -221,7 +219,6 @@ def test_socket_authentication_precedes_stream_subscription(tmp_path) -> None:
                 source_instance_id=SOURCE,
                 client=UnixCmuxSocketClient(socket_path, password="swordfish"),
                 outbox=outbox,
-                marker_key=KEY,
             ).run()
 
         assert len(harness.auth_attempts) == 1
@@ -267,7 +264,6 @@ def test_one_hundred_reconnects_resume_without_reinjecting_or_skipping(
                 source_instance_id=SOURCE,
                 client=UnixCmuxSocketClient(socket_path),
                 outbox=outbox,
-                marker_key=KEY,
             ).run(max_connections=101)
 
         assert run.connections == 101
@@ -328,7 +324,6 @@ def test_sensitive_prompt_preview_is_not_persisted(tmp_path) -> None:
                 source_instance_id=SOURCE,
                 client=UnixCmuxSocketClient(socket_path),
                 outbox=outbox,
-                marker_key=KEY,
             ).run()
         stored = outbox.outbox_rows(SOURCE)[0]["event_json"]
 
@@ -361,7 +356,6 @@ def test_nested_safe_payload_values_are_not_persisted(tmp_path) -> None:
                 source_instance_id=SOURCE,
                 client=UnixCmuxSocketClient(socket_path),
                 outbox=outbox,
-                marker_key=KEY,
             ).run()
         stored = outbox.outbox_rows(SOURCE)[0]["event_json"]
 
@@ -397,7 +391,6 @@ def test_malformed_slow_consumer_sequence_is_rejected(tmp_path, latest_seq) -> N
             source_instance_id=SOURCE,
             client=UnixCmuxSocketClient(socket_path),
             outbox=outbox,
-            marker_key=KEY,
         ).run()
 
 
@@ -425,5 +418,4 @@ def test_oversized_event_frame_is_rejected(tmp_path) -> None:
             source_instance_id=SOURCE,
             client=UnixCmuxSocketClient(socket_path),
             outbox=outbox,
-            marker_key=KEY,
         ).run()

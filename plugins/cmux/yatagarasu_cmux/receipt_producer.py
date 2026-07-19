@@ -185,7 +185,7 @@ def _translate_derived_event(event: DerivedEvent) -> _TranslatedObservation:
     marker_signature = None
     if event.event_name == "workspace.prompt.submitted":
         preview = payload.get("message_preview")
-        marker = extract(None, preview if isinstance(preview, str) else None)
+        marker = extract(preview) if isinstance(preview, str) else None
         if marker is not None:
             binding_id = marker.binding_id
             marker_signature = marker.signature

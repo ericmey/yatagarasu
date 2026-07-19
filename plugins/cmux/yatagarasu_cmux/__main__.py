@@ -29,7 +29,7 @@ import time
 from . import runtime
 from .runtime import RuntimeDiscoveryError
 from .socket_client import UnixCmuxSocketClient
-from .supervisor import Supervisor, marker_key_path
+from .supervisor import Supervisor
 
 
 def _add_common(parser: argparse.ArgumentParser) -> None:
@@ -79,8 +79,6 @@ def _load(args: argparse.Namespace) -> runtime.RuntimeConfig:
 def cmd_doctor(args: argparse.Namespace) -> int:
     config = _load(args)
     print(runtime.describe(config))
-    key = marker_key_path(config)
-    print(f"marker_key={key} ({'present' if key.exists() else 'not yet minted'})")
     print("\nconfiguration is usable; nothing was started")
     return 0
 

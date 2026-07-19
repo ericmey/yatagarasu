@@ -72,12 +72,12 @@ def test_injected_marker_survives_the_240_character_live_preview() -> None:
     live_preview = (
         transport.text[:239] + "…" if len(transport.text) > 240 else transport.text
     )
-    observed = extract(None, live_preview)
+    observed = extract(live_preview)
     assert observed is not None
     assert observed.delivery_id == delivery.delivery_id
     assert observed.binding_id == delivery.binding_id
     authoritative = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
     assert observed.signature == authoritative.signature
-    assert extract(None, f"{token}A") is None, (
+    assert extract(f"{token}A") is None, (
         "a longer signature segment must not authenticate by matching a valid prefix"
     )

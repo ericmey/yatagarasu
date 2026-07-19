@@ -72,7 +72,7 @@ class ReceiptEmitter:
             pending.prompt_event = event
             pending.decoded_marker = None
             if payload and "message_preview" in payload:
-                pending.decoded_marker = extract(None, payload["message_preview"])
+                pending.decoded_marker = extract(payload["message_preview"])
         elif name == "agent.hook.UserPromptSubmit":
             pending = self._pending_chains.pop(workspace_key, None)
             if not event.session_id:
