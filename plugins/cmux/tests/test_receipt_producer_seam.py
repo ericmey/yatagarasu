@@ -18,6 +18,7 @@ from yatagarasu_cmux import (
     EventProjector,
     EventStreamResident,
     UnixCmuxSocketClient,
+    encode_short,
 )
 from yatagarasu_cmux.runtime import RuntimeConfig
 from yatagarasu_cmux.supervisor import Supervisor
@@ -458,7 +459,7 @@ def test_literal_duplicate_capture_preserves_broken_signature(
     attacker = MarkerAuthority(ATTACKER_KEY)
     authoritative = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
     forged = attacker.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
-    source_events = _captured_duplicate_frames(attacker.encode(forged))
+    source_events = _captured_duplicate_frames(encode_short(forged))
     socket_path = short_socket_path(tmp_path, "literal-forged-capture")
     config = RuntimeConfig(
         socket_path=socket_path,

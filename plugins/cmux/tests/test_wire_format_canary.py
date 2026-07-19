@@ -78,3 +78,6 @@ def test_injected_marker_survives_the_240_character_live_preview() -> None:
     assert observed.binding_id == delivery.binding_id
     authoritative = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
     assert observed.signature == authoritative.signature
+    assert extract(None, f"{token}A") is None, (
+        "a longer signature segment must not authenticate by matching a valid prefix"
+    )

@@ -18,6 +18,8 @@ from __future__ import annotations
 import hmac
 import re
 import secrets
+from base64 import urlsafe_b64decode, urlsafe_b64encode
+from binascii import Error as Base64Error
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Final
@@ -80,9 +82,52 @@ def mint(key: bytes, delivery_id: str) -> Marker:
 
 
 _YGR1_RE = re.compile(r"(ygr1\.[A-Za-z0-9_-]+)")
+_SHORT_PREFIX: Final = "ygr1s"
+_TOKEN_ID_PATTERN: Final = r"[A-Za-z0-9_-]{1,64}"
+_SHORT_SIGNATURE_CHARS: Final = 43
+_SHORT_MARKER_RE: Final = re.compile(
+    rf"(?P<token>{_SHORT_PREFIX}\."
+    rf"(?P<delivery_id>{_TOKEN_ID_PATTERN})\."
+    rf"(?P<binding_id>{_TOKEN_ID_PATTERN})\."
+    rf"(?P<signature>[A-Za-z0-9_-]{{{_SHORT_SIGNATURE_CHARS}}}))"
+    rf"(?![A-Za-z0-9_-])"
+)
+MAX_SHORT_MARKER_CHARS: Final = 180
 
 
-def extract(key: bytes | None, haystack: str | None) -> DeliveryMarker | None:
+@dataclass(frozen=True, slots=True)
+class ShortMarker:
+    """The independently observed correlation fields that fit a CMUX preview."""
+
+    delivery_id: str
+    binding_id: str
+    signature: str
+
+    @property
+    def text(self) -> str:
+        signature_bytes = bytes.fromhex(self.signature)
+        signature = urlsafe_b64encode(signature_bytes).decode().rstrip("=")
+        return f"{_SHORT_PREFIX}.{self.delivery_id}.{self.binding_id}.{signature}"
+
+
+def encode_short(marker: DeliveryMarker) -> str:
+    """Encode only wire-observed correlation fields under the 240-char cap."""
+    id_pattern = re.compile(rf"^{_TOKEN_ID_PATTERN}$")
+    if not id_pattern.fullmatch(marker.delivery_id):
+        raise MarkerError("delivery_id cannot be represented in a short marker")
+    if not id_pattern.fullmatch(marker.binding_id):
+        raise MarkerError("binding_id cannot be represented in a short marker")
+    if not re.fullmatch(r"[0-9a-f]{64}", marker.signature):
+        raise MarkerError("marker signature is not a full SHA-256 hex digest")
+    token = ShortMarker(marker.delivery_id, marker.binding_id, marker.signature).text
+    if len(token) > MAX_SHORT_MARKER_CHARS:
+        raise MarkerError("short marker exceeds the CMUX preview budget")
+    return token
+
+
+def extract(
+    key: bytes | None, haystack: str | None
+) -> DeliveryMarker | ShortMarker | None:
     """Extract and parse a marker from arbitrary text.
 
     Returns ``None`` when no decodable marker is present. Note that decoding is
@@ -93,6 +138,21 @@ def extract(key: bytes | None, haystack: str | None) -> DeliveryMarker | None:
     """
     if not haystack:
         return None
+
+    short = _SHORT_MARKER_RE.search(haystack)
+    if short is not None:
+        encoded_signature = short.group("signature")
+        try:
+            signature_bytes = urlsafe_b64decode(encoded_signature + "=")
+        except (ValueError, Base64Error):
+            signature_bytes = b""
+        canonical = urlsafe_b64encode(signature_bytes).decode().rstrip("=")
+        if len(signature_bytes) == 32 and canonical == encoded_signature:
+            return ShortMarker(
+                delivery_id=short.group("delivery_id"),
+                binding_id=short.group("binding_id"),
+                signature=signature_bytes.hex(),
+            )
 
     # Signature validation lives in MarkerAuthority.validate, which needs the
     # delivery record; this function only parses the wire format.
@@ -116,6 +176,13 @@ def extract(key: bytes | None, haystack: str | None) -> DeliveryMarker | None:
             continue
 
     return None
+
+
+def marker_text(marker: DeliveryMarker | ShortMarker) -> str:
+    """Return the exact safe marker token without surrounding prompt content."""
+    if isinstance(marker, ShortMarker):
+        return marker.text
+    return MarkerAuthority.encode(marker)
 
 
 def redact(haystack: str | None) -> str:

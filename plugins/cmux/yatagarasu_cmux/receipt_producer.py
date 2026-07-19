@@ -96,6 +96,17 @@ class DerivedEventReceiptProducer:
         """
         workspace_key = event.workspace_id or "<unscoped>"
         name = event.source_event.event_name
+        phase = event.payload.get("phase")
+
+        # CMUX relays both received and completed hook phases. Only completed is
+        # durable harness evidence. Older providers omitted phase; retain that
+        # compatibility rather than silently dropping their single callback.
+        if (
+            name.startswith("agent.hook.")
+            and isinstance(phase, str)
+            and phase != "completed"
+        ):
+            return False
 
         if name == "surface.input_sent":
             self._workspace_chains[workspace_key] = _WorkspaceChain()
@@ -114,13 +125,12 @@ class DerivedEventReceiptProducer:
         if name in {
             "workspace.prompt.submitted",
             "agent.hook.UserPromptSubmit",
+            "agent.hook.Stop",
         }:
             if key in chain.accepted:
                 return False
             chain.accepted.add(key)
 
-        if name == "agent.hook.Stop":
-            self._workspace_chains.pop(workspace_key, None)
         return True
 
     def _new_emitter(self) -> ReceiptEmitter:
