@@ -325,6 +325,16 @@ def _run_duplicated_live_chain(tmp_path, delivery, wire_token, authoritative_mar
     ]
     for source_event in source_events:
         source_event["occurred_at"] = OBSERVED_AT
+        # Match the capture's NULLS, not just its event names. In the live
+        # stream `surface_id` is null on workspace.prompt.submitted and on the
+        # agent.hook.* events, and `session_id` is null on everything before the
+        # hooks. Those nulls are exactly the fields correlation has to survive,
+        # so a fixture that quietly fills them in is testing an easier problem
+        # than production faces — and calling it "the ACTUAL live sequence"
+        # while it differs in the correlating fields is the overclaim this
+        # repo has spent the day removing. Copilot caught it here.
+        if source_event["name"] != "surface.input_sent":
+            source_event["surface_id"] = None
     frames = [
         ack(
             "boot-dup",
