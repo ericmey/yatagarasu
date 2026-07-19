@@ -246,7 +246,7 @@ def test_y_cmux_002_observer_consumes_event_chain_on_first_call() -> None:
     # an empty list, the injector classifies as NOT_SUBMITTED.
     assert second.outcome is SubmitOutcome.NOT_SUBMITTED, (
         "second call must see an empty event chain (consumed-on-first-call) "
-        "and classify as NOT_SUBMITTED, NOT SUBMITTED. If this fails with "
-        "SUBMITTED, the fake is replaying events on every call — a regression "
-        "of the bus-replay shape we are trying to test against."
+        "and classify as NOT_SUBMITTED. If this fails with SUBMITTED, "
+        "the fake is replaying events on every call — a regression of the "
+        "bus-replay shape we are trying to test against."
     )

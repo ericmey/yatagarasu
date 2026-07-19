@@ -23,6 +23,7 @@ config implements.
 from __future__ import annotations
 
 import os
+import sys
 
 import pytest
 
@@ -51,13 +52,36 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
     CI uses the env var; humans running locally can pass
     ``--skip-floor=N`` to bypass during transitional states.
+
+    The env var is parsed defensively: a typo or non-numeric value
+    falls back to ``_DEFAULT_FLOOR`` with a warning rather than
+    crashing pytest collection with a ValueError. Everyone runs this
+    file; a typo in an env var should not make the suite unstartable.
     """
+
+    default_floor = _DEFAULT_FLOOR
+    raw_env = os.environ.get(_SKIP_FLOOR_ENV)
+    if raw_env is not None:
+        try:
+            default_floor = int(raw_env)
+        except ValueError:
+            # Use sys.stderr.write rather than warnings.warn because the
+            # project policy is filterwarnings=["error"] — any UserWarning
+            # becomes a test-collection failure. This is an operational
+            # message to the human who typed the env var, not a code-quality
+            # warning; the strict policy doesn't apply.
+            sys.stderr.write(
+                f"yatagarasu: {_SKIP_FLOOR_ENV}={raw_env!r} is not a valid "
+                f"integer; falling back to default floor={_DEFAULT_FLOOR}. "
+                f"Fix the env var (set to an integer like '6') to silence.\n"
+            )
+            default_floor = _DEFAULT_FLOOR
 
     parser.addoption(
         "--skip-floor",
         action="store",
         type=int,
-        default=int(os.environ.get(_SKIP_FLOOR_ENV, _DEFAULT_FLOOR)),
+        default=default_floor,
         help=(
             "Maximum number of pytest.skip() invocations permitted in a "
             "test run. Default tracks the count of honestly-tracked "

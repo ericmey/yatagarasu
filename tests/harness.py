@@ -1,6 +1,28 @@
-"""Fixture harness for the yatagarasu acceptance suite (issue #5).
+"""Fixture harness surface for the yatagarasu acceptance suite (issue #5).
 
-Drives the real cmux event bus, not a mock. Owner: lane/qa.
+Owner: lane/qa.
+
+This file is the SURFACE CONTRACT, not the implementation. It declares
+the seven fixture levers the team's acceptance tests need (per issue #5):
+``inject``, ``suppress_composer_submit``, ``restart_cmux``,
+``restart_seat_session``, ``force_slow_consumer``, ``set_focused_surface``,
+``two_seats_one_workspace``. Today, six of those levers raise
+``NotImplementedError`` with the issue reference that owns the gap; only
+``suppress_composer_submit`` has a real body (it toggles the frozen
+``_KnobState`` via ``dataclasses.replace``).
+
+The hook contracts are settled; the seam-injection code that drives them
+is what each issue owns:
+  - issue #22 (production event-stream resident) — ``inject``,
+    ``restart_cmux``, ``restart_seat_session``, ``force_slow_consumer``,
+    ``two_seats_one_workspace``
+  - issue #23 (production notification lifecycle) — ``set_focused_surface``
+
+This module is NOT the harness that drives the real cmux event bus. Until
+the production modules land, tests that reach for the placeholder levers
+get a fail-loud ``NotImplementedError`` naming the issue that owns the gap.
+That is by design — silent-no-op behaviors are the vacuous-test failure mode
+(something that cannot fail, therefore cannot inform).
 
 The harness owns two surfaces:
 
@@ -267,7 +289,15 @@ class Harness:
             self._events_tail.close()
         if self._proc is not None:
             self._proc.terminate()
-            self._proc.wait(timeout=10)
+            # A child that ignores SIGTERM can keep running; a 10-second
+            # wait then escalates to SIGKILL. Without the TimeoutExpired
+            # branch, cleanup itself crashes with an unrelated traceback
+            # when a test fixture misbehaves.
+            try:
+                self._proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._proc.kill()
+                self._proc.wait()
 
 
 @contextlib.contextmanager
