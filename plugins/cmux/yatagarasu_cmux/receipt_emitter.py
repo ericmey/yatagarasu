@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import re
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from yatagarasu_core import (
     Delivery,
@@ -17,6 +18,14 @@ from yatagarasu_core.proofs import MarkerAuthority
 from yatagarasu_core.proofs import MarkerError as CoreMarkerError
 
 _YGR1_RE = re.compile(r"(ygr1\.[A-Za-z0-9_-]+)")
+_UNSCOPED_WORKSPACE = "<unscoped>"
+
+
+@dataclass(slots=True)
+class _PendingChain:
+    input_event: SourceEventRef | None = None
+    prompt_event: SourceEventRef | None = None
+    decoded_marker: DeliveryMarker | None = None
 
 
 class ReceiptEmitter:
@@ -35,70 +44,73 @@ class ReceiptEmitter:
         self._provider_id = provider_id
         self._delivery_lookup = delivery_lookup
 
-        # session_id -> (Delivery, DeliveryMarker, [input_sent, prompt_submitted, user_prompt_submit])
+        # (workspace_id, session_id) -> correlated proof chain. Session IDs are
+        # not assumed to be globally unique across resident workspaces.
         self._active_chains: dict[
-            str, tuple[Delivery, DeliveryMarker, list[SourceEventRef]]
+            tuple[str, str], tuple[Delivery, DeliveryMarker, list[SourceEventRef]]
         ] = {}
 
-        # Ephemeral buffer for the current turn being built
-        self._pending_input: SourceEventRef | None = None
-        self._pending_prompt: SourceEventRef | None = None
-        self._pending_decoded_marker: DeliveryMarker | None = None
+        # A resident observes every workspace on its host. Pending correlation
+        # must therefore be workspace-scoped or interleaved turns overwrite
+        # one another before the harness hook arrives.
+        self._pending_chains: dict[str, _PendingChain] = {}
 
     def observe(
-        self, event: SourceEventRef, payload: dict | None = None, *, observed_at: str
+        self,
+        event: SourceEventRef,
+        payload: dict | None = None,
+        *,
+        observed_at: str,
+        workspace_id: str | None = None,
     ) -> None:
         """Process an event from the cmux event bus."""
         name = event.event_name
+        workspace_key = workspace_id or _UNSCOPED_WORKSPACE
 
         if name == "surface.input_sent":
-            self._pending_input = event
+            self._pending_chains[workspace_key] = _PendingChain(input_event=event)
 
         elif name == "workspace.prompt.submitted":
-            self._pending_prompt = event
+            pending = self._pending_chains.setdefault(workspace_key, _PendingChain())
+            pending.prompt_event = event
+            pending.decoded_marker = None
             if payload and "message_preview" in payload:
                 match = _YGR1_RE.search(payload["message_preview"])
                 if match:
                     with contextlib.suppress(CoreMarkerError):
-                        self._pending_decoded_marker = MarkerAuthority.decode(
-                            match.group(1)
-                        )
+                        pending.decoded_marker = MarkerAuthority.decode(match.group(1))
         elif name == "agent.hook.UserPromptSubmit":
-            try:
-                if not event.session_id:
-                    return
+            pending = self._pending_chains.pop(workspace_key, None)
+            if not event.session_id:
+                return
 
-                if (
-                    self._pending_input
-                    and self._pending_prompt
-                    and self._pending_decoded_marker
-                ):
-                    context = self._delivery_lookup(
-                        self._pending_decoded_marker.delivery_id
+            if (
+                pending
+                and pending.input_event
+                and pending.prompt_event
+                and pending.decoded_marker
+            ):
+                context = self._delivery_lookup(pending.decoded_marker.delivery_id)
+                if context:
+                    delivery, core_marker = context
+                    # The prompt correlation fields were produced from the
+                    # observed DerivedEvent. Never replace them from the
+                    # authoritative lookup or core compares a value with
+                    # itself and the guard can no longer fail.
+                    chain = [pending.input_event, pending.prompt_event, event]
+                    self._active_chains[(workspace_key, event.session_id)] = (
+                        delivery,
+                        core_marker,
+                        chain,
                     )
-                    if context:
-                        delivery, core_marker = context
-                        # The prompt correlation fields were produced from the
-                        # observed DerivedEvent. Never replace them from the
-                        # authoritative lookup or core compares a value with
-                        # itself and the guard can no longer fail.
-                        chain = [self._pending_input, self._pending_prompt, event]
-                        self._active_chains[event.session_id] = (
-                            delivery,
-                            core_marker,
-                            chain,
-                        )
-            finally:
-                # Clear ephemeral buffer on every exit path
-                self._pending_input = None
-                self._pending_prompt = None
-                self._pending_decoded_marker = None
 
         elif name == "agent.hook.Stop":
             if not event.session_id:
                 return
 
-            chain_data = self._active_chains.pop(event.session_id, None)
+            chain_data = self._active_chains.pop(
+                (workspace_key, event.session_id), None
+            )
             if not chain_data:
                 # Uncorrelated Stop: emit nothing.
                 return
