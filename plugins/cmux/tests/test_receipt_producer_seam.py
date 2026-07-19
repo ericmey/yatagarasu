@@ -24,11 +24,17 @@ from yatagarasu_cmux.runtime import RuntimeConfig
 from yatagarasu_cmux.supervisor import Supervisor
 
 from yatagarasu_core import (
+    CoreStore,
     CorrelationRule,
     Delivery,
     DeliveryMode,
+    DeliveryState,
     EvidenceClass,
     ProofMethodRegistration,
+    ProviderKind,
+    Receipt,
+    ReceiptReducer,
+    SessionBinding,
     SourceKind,
 )
 from yatagarasu_core.proofs import MarkerAuthority, validate_session_proof
@@ -64,7 +70,12 @@ def _registration() -> ProofMethodRegistration:
         source_kind=SourceKind.EVENT_BUS,
         source_instance_id=SOURCE_INSTANCE,
         correlation_rule=CorrelationRule.CMUX_HARNESS_CHAIN,
-        evidence_classes=frozenset({EvidenceClass.HARNESS_TURN_COMPLETED}),
+        evidence_classes=frozenset(
+            {
+                EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+                EvidenceClass.HARNESS_TURN_COMPLETED,
+            }
+        ),
     )
 
 
@@ -150,6 +161,96 @@ def test_live_shaped_frames_cross_resident_and_validate(tmp_path, delivery) -> N
         )
         is None
     )
+
+
+def test_live_producer_advances_real_reducer_through_both_stages(
+    tmp_path, delivery
+) -> None:
+    """Reopen SEV-1 if the producer omits either half of the linear chain."""
+    authority = MarkerAuthority(REAL_KEY)
+    marker = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
+    store = CoreStore(tmp_path / "two-stage-core.sqlite")
+    store.add_delivery(delivery)
+    store.set_dispatching(delivery.delivery_id)
+    store.register_provider(
+        PROVIDER_ID,
+        ProviderKind.SESSION_TRANSPORT,
+        {
+            EvidenceClass.TRANSPORT_SUBMIT_ACK,
+            EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+            EvidenceClass.HARNESS_TURN_COMPLETED,
+        },
+    )
+    store.register_session_binding(
+        SessionBinding(
+            binding_id=delivery.binding_id,
+            recipient_id=delivery.recipient_id,
+            provider_id=PROVIDER_ID,
+            adapter_instance_id="cmux-live-adapter",
+            harness="codex",
+            session_id=SESSION_ID,
+            established_at=ISSUED_AT,
+            expires_at=EXPIRES_AT,
+            proof_methods=(_registration(),),
+        )
+    )
+    reducer = ReceiptReducer(store, authority)
+    transport = reducer.submit(
+        Receipt(
+            receipt_id="rec-live-transport",
+            event_id=delivery.event_id,
+            delivery_id=delivery.delivery_id,
+            attempt_id=delivery.attempt_id,
+            binding_id=delivery.binding_id,
+            evidence_provider_id=PROVIDER_ID,
+            evidence_class=EvidenceClass.TRANSPORT_SUBMIT_ACK,
+            proof_method=PROOF_METHOD,
+            observed_at=OBSERVED_AT,
+        )
+    )
+    assert transport.state is DeliveryState.TRANSPORT_SUBMITTED
+
+    results = []
+    producer = DerivedEventReceiptProducer(
+        core_client=lambda receipt: results.append(reducer.submit(receipt)),
+        provider_id=PROVIDER_ID,
+        delivery_lookup=lambda delivery_id: (
+            (delivery, marker) if delivery_id == delivery.delivery_id else None
+        ),
+    )
+    projector = EventProjector(source_instance_id=SOURCE_INSTANCE)
+    frames = [
+        event("boot-two-stage", 1, name="surface.input_sent"),
+        event(
+            "boot-two-stage",
+            2,
+            name="workspace.prompt.submitted",
+            payload={"message_preview": encode_short(marker)},
+        ),
+        event(
+            "boot-two-stage",
+            3,
+            name="agent.hook.UserPromptSubmit",
+            payload={"session_id": SESSION_ID, "phase": "completed"},
+        ),
+        event(
+            "boot-two-stage",
+            4,
+            name="agent.hook.Stop",
+            payload={"session_id": SESSION_ID, "phase": "completed"},
+        ),
+    ]
+    for frame in frames:
+        frame["occurred_at"] = OBSERVED_AT
+        producer.observe(projector.project(frame, expected_boot_id="boot-two-stage"))
+
+    assert [result.status for result in results] == ["accepted", "accepted"]
+    assert [result.state for result in results] == [
+        DeliveryState.IN_SESSION,
+        DeliveryState.PROCESSED,
+    ]
+    assert store.get_delivery(delivery.delivery_id).state is DeliveryState.PROCESSED
+    store.close()
 
 
 def test_wire_signature_mismatch_survives_translation_and_is_rejected(
