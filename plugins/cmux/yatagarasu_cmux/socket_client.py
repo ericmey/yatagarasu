@@ -26,6 +26,18 @@ class StreamConnection(AbstractContextManager["StreamConnection"]):
         self._socket = sock
         self._reader = sock.makefile("rb")
 
+    def set_read_timeout(self, seconds: float | None) -> None:
+        """Bound how long a single ``read_frame`` may block.
+
+        The resident deliberately runs with no timeout — it is supposed to wait
+        indefinitely for the next event. A preflight check is the opposite: it
+        must terminate, or it is not a check. A timeout raises out of
+        ``read_frame`` and leaves the buffered reader mid-frame, so a caller
+        that sets one must treat the timeout as terminal for this connection
+        rather than looping and reading again.
+        """
+        self._socket.settimeout(seconds)
+
     def read_frame(self) -> dict[str, object] | None:
         raw = self._reader.readline(MAX_FRAME_BYTES + 2)
         if not raw:

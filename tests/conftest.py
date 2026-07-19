@@ -29,22 +29,23 @@ import pytest
 
 _SKIP_FLOOR_ENV = "YATAGARASU_SKIP_FLOOR"
 # Default floor tracks the count of HONESTLY skipped hooks with
-# tracked issues. As of 2026-07-18 (after Y-CMUX-009 began passing per
-# PR #40) the suite has 5 such skips, each referencing an open issue in
-# the path-to-completion plan (#37):
-#   Y-CMUX-006 -> #22  Y-CMUX-007 -> #23  Y-CMUX-010 -> #26
+# tracked issues. As of 2026-07-19 the suite has 4 such skips, each
+# referencing an open issue in the path-to-completion plan (#37):
+#   Y-CMUX-007 -> #23  Y-CMUX-010 -> #26
 #   Y-CMUX-012 -> #28  Y-CMUX-014 -> #29
-# (Y-CMUX-008 was previously skipped awaiting issue #24; that issue
-# landed in PR #39, the skip converted to a pass, floor dropped 7 -> 6.
-# Y-CMUX-009 was previously skipped awaiting issue #25; that issue
-# landed in PR #40, the skip converted to a pass, floor dropped 6 -> 5.)
+# (Y-CMUX-008 -> #24 landed in PR #39, floor 7 -> 6. Y-CMUX-009 -> #25
+# landed in PR #40, floor 6 -> 5. Y-CMUX-006 -> #22 began passing in
+# PR #44 but the floor was NOT lowered with it; caught 2026-07-19 and
+# dropped 5 -> 4. A ratchet that is only ever tightened by hand is not
+# a ratchet — a regression from 4 skips back to 5 would have passed
+# silently for as long as the floor stayed stale.)
 # Raising the floor requires either:
 #   1. A new tracked skip (add a line above with its issue ref), OR
 #   2. Resolving an existing issue and converting the skip to a pass
 #      (lower the floor by one and remove the line).
 # An UNTRACKED skip is exactly the failure mode this conftest is
 # built to detect; see the "a skip beats a lie" rule in issue #37.
-_DEFAULT_FLOOR = 5
+_DEFAULT_FLOOR = 4
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
