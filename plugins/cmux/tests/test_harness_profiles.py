@@ -55,7 +55,9 @@ def _exercise_profile(tmp_path, kind: HarnessKind) -> dict[str, object]:
     with CmuxSocketHarness(socket_path, []) as harness:
         transport = CmuxSocketTransport.from_socket_path(socket_path)
         profile = profile_for(kind)
-        transport.send_text("00000000-0000-0000-0000-000000000026", profile.render("signed envelope"))
+        transport.send_text(
+            "00000000-0000-0000-0000-000000000026", profile.render("signed envelope")
+        )
         transport.submit("00000000-0000-0000-0000-000000000026", profile.submit_key)
 
     requests = harness.command_requests

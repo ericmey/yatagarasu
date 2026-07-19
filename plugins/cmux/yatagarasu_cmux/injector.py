@@ -22,10 +22,11 @@ import logging
 from collections.abc import Callable, Iterable, Sequence
 from typing import Protocol
 
-from yatagarasu_cmux.marker import MarkerError, redact
 from yatagarasu_core import Delivery
 from yatagarasu_core.proofs import DeliveryMarker, MarkerAuthority
 
+from .harness_profiles import HarnessKind, profile_for
+from .marker import MarkerError, redact
 from .outcome import SubmitOutcome, SubmitResult
 
 log = logging.getLogger(__name__)
@@ -53,7 +54,7 @@ class Transport(Protocol):
 
     def send_text(self, surface: str, text: str) -> None: ...
 
-    def submit(self, surface: str) -> None: ...
+    def submit(self, surface: str, key: str) -> None: ...
 
 
 class BusObserver(Protocol):
@@ -91,6 +92,8 @@ class Injector:
         body: str,
         issued_at: str,
         expires_at: str,
+        *,
+        harness: HarnessKind | str,
     ) -> SubmitResult:
         """Inject ``body`` for ``identity`` and report a definite outcome.
 
@@ -111,6 +114,20 @@ class Injector:
                 SubmitOutcome.NOT_SUBMITTED, delivery_id, (), f"marker error: {exc}"
             )
 
+        # The authoritative binding must name a supported harness. Reject an
+        # unknown profile before resolving or touching any terminal surface.
+        try:
+            profile = profile_for(harness)
+            encoded_marker = self.marker_authority.encode(marker)
+            text = profile.render(f"{encoded_marker} {body}")
+        except ValueError as exc:
+            return SubmitResult(
+                SubmitOutcome.NOT_SUBMITTED,
+                delivery_id,
+                (),
+                f"harness profile error: {exc}",
+            )
+
         # Resolved per send, never cached: a handle from a previous send may now
         # point at a surface that no longer exists.
         try:
@@ -126,10 +143,6 @@ class Injector:
                 f"unresolved: {exc}",
             )
 
-        # Marker injection format updated to conform to core (YGR1 base64 format)
-        encoded_marker = self.marker_authority.encode(marker)
-        text = f"{encoded_marker} {body}"
-
         # From here the local effect may fire. Record intent BEFORE touching the
         # surface: a crash between the effect and the journal write would
         # otherwise look like "never injected" and invite a duplicate turn.
@@ -138,7 +151,7 @@ class Injector:
 
         try:
             self.transport.send_text(surface, text)
-            self.transport.submit(surface)
+            self.transport.submit(surface, profile.submit_key)
         except Exception as exc:
             # The send may have partially applied. We cannot prove it did not.
             log.warning(
