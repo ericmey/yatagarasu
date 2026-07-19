@@ -38,11 +38,22 @@ class DerivedEventReceiptProducer:
         provider_id: str,
         delivery_lookup: Callable[[str], tuple[Delivery, DeliveryMarker] | None],
     ) -> None:
-        self._emitter = ReceiptEmitter(
-            core_client=core_client,
-            provider_id=provider_id,
-            delivery_lookup=delivery_lookup,
-        )
+        self._core_client = core_client
+        self._provider_id = provider_id
+        self._delivery_lookup = delivery_lookup
+        self._emitter = self._new_emitter()
+
+    def recover(self, events: tuple[DerivedEvent, ...]) -> None:
+        """Rebuild ephemeral chain state from the durable source outbox.
+
+        Completed historical chains may re-emit their stable receipt IDs. The
+        core reducer classifies those as duplicates; replaying is safer than
+        losing a chain that was between ``UserPromptSubmit`` and ``Stop`` when
+        the resident restarted.
+        """
+        self._emitter = self._new_emitter()
+        for event in events:
+            self.observe(event)
 
     def observe(self, event: DerivedEvent) -> None:
         """Translate one projected event and feed the receipt state machine."""
@@ -51,6 +62,13 @@ class DerivedEventReceiptProducer:
             source_event,
             payload=payload,
             observed_at=observed_at,
+        )
+
+    def _new_emitter(self) -> ReceiptEmitter:
+        return ReceiptEmitter(
+            core_client=self._core_client,
+            provider_id=self._provider_id,
+            delivery_lookup=self._delivery_lookup,
         )
 
 

@@ -178,6 +178,9 @@ def test_receipt_sink_failure_does_not_advance_the_stream_cursor(tmp_path) -> No
     """Reopen if a failed receipt side effect becomes an unreplayable event."""
 
     class FailingProducer:
+        def recover(self, events) -> None:
+            assert events == ()
+
         def observe(self, event) -> None:
             raise RuntimeError(f"receipt sink unavailable for {event.source_event_id}")
 
@@ -206,3 +209,86 @@ def test_receipt_sink_failure_does_not_advance_the_stream_cursor(tmp_path) -> No
 
         assert outbox.cursor(SOURCE_INSTANCE) is None
         assert outbox.outbox_rows(SOURCE_INSTANCE) == ()
+
+
+def test_restart_rebuilds_an_active_chain_before_stop_arrives(
+    tmp_path, delivery
+) -> None:
+    """Reopen if a restart between prompt acceptance and Stop loses proof."""
+    authority = MarkerAuthority(REAL_KEY)
+    authoritative = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
+    token = authority.encode(authoritative)
+    socket_path = short_socket_path(tmp_path, "receipt-producer-restart")
+    state_dir = tmp_path / "restart-state"
+    state_dir.mkdir()
+    config = RuntimeConfig(socket_path, state_dir, None, SOURCE_INSTANCE)
+    emitted = []
+
+    def supervisor():
+        return Supervisor.with_receipts(
+            config,
+            core_client=emitted.append,
+            provider_id=PROVIDER_ID,
+            delivery_lookup=lambda delivery_id: (
+                (delivery, authoritative)
+                if delivery_id == delivery.delivery_id
+                else None
+            ),
+        )
+
+    accepted_frames = [
+        ack(
+            "boot-restart",
+            replay_count=0,
+            gap=False,
+            requested_after_seq=None,
+            latest_seq=3,
+        ),
+        event("boot-restart", 1, name="surface.input_sent"),
+        event(
+            "boot-restart",
+            2,
+            name="workspace.prompt.submitted",
+            payload={"message_preview": token},
+        ),
+        event(
+            "boot-restart",
+            3,
+            name="agent.hook.UserPromptSubmit",
+            payload={"session_id": SESSION_ID},
+        ),
+    ]
+    stop_frames = [
+        ack(
+            "boot-restart",
+            replay_count=0,
+            gap=False,
+            requested_after_seq=3,
+            latest_seq=4,
+        ),
+        event(
+            "boot-restart",
+            4,
+            name="agent.hook.Stop",
+            payload={"session_id": SESSION_ID},
+        ),
+    ]
+    for source_event in [*accepted_frames[1:], stop_frames[1]]:
+        source_event["occurred_at"] = OBSERVED_AT
+
+    with CmuxSocketHarness(socket_path, [accepted_frames]):
+        first = supervisor().run_once()
+    assert first.inserted_event_count == 3
+    assert emitted == []
+
+    with CmuxSocketHarness(socket_path, [stop_frames]):
+        second = supervisor().run_once()
+    assert second.reconnect_after_seq == (3,)
+    assert len(emitted) == 1
+    assert emitted[0].proof is not None
+    assert [event.event_name for event in emitted[0].proof.source_events] == [
+        "surface.input_sent",
+        "workspace.prompt.submitted",
+        "agent.hook.UserPromptSubmit",
+        "agent.hook.Stop",
+    ]
