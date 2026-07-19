@@ -62,7 +62,12 @@ def _registration() -> ProofMethodRegistration:
         source_kind=SourceKind.EVENT_BUS,
         source_instance_id=SOURCE_INSTANCE,
         correlation_rule=CorrelationRule.CMUX_HARNESS_CHAIN,
-        evidence_classes=frozenset({EvidenceClass.HARNESS_TURN_COMPLETED}),
+        evidence_classes=frozenset(
+            {
+                EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+                EvidenceClass.HARNESS_TURN_COMPLETED,
+            }
+        ),
     )
 
 
@@ -132,22 +137,26 @@ def test_a_forged_marker_in_the_prompt_is_rejected_by_core(delivery) -> None:
     assert forged.signature != authoritative.signature, "fixture is not adversarial"
 
     emitted = _run_chain(attacker.encode(forged), delivery, authoritative)
-    assert len(emitted) == 1, "the emitter builds a chain; core is what refuses it"
+    assert [receipt.evidence_class for receipt in emitted] == [
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+        EvidenceClass.HARNESS_TURN_COMPLETED,
+    ], "the emitter builds both stages; core is what refuses them"
 
-    error = validate_session_proof(
-        proof=emitted[0].proof,
-        delivery=delivery,
-        evidence_class=EvidenceClass.HARNESS_TURN_COMPLETED,
-        registration=_registration(),
-        marker_authority=authority,
-        observed_at=OBSERVED_AT,
-    )
+    for receipt in emitted:
+        error = validate_session_proof(
+            proof=receipt.proof,
+            delivery=delivery,
+            evidence_class=receipt.evidence_class,
+            registration=_registration(),
+            marker_authority=authority,
+            observed_at=OBSERVED_AT,
+        )
 
-    assert error == "prompt_marker_binding_mismatch", (
-        "a forged marker produced an ACCEPTED receipt — the prompt's correlation"
-        " fields are being sourced from the authoritative record instead of the"
-        " observed wire, so core is comparing a value against itself"
-    )
+        assert error == "prompt_marker_binding_mismatch", (
+            "a forged marker produced an ACCEPTED receipt — the prompt's correlation"
+            " fields are being sourced from the authoritative record instead of the"
+            " observed wire, so core is comparing a value against itself"
+        )
 
 
 def test_the_authentic_marker_still_validates(delivery) -> None:
@@ -157,15 +166,19 @@ def test_the_authentic_marker_still_validates(delivery) -> None:
     authoritative = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
 
     emitted = _run_chain(authority.encode(authoritative), delivery, authoritative)
-    assert len(emitted) == 1
+    assert [receipt.evidence_class for receipt in emitted] == [
+        EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+        EvidenceClass.HARNESS_TURN_COMPLETED,
+    ]
 
-    error = validate_session_proof(
-        proof=emitted[0].proof,
-        delivery=delivery,
-        evidence_class=EvidenceClass.HARNESS_TURN_COMPLETED,
-        registration=_registration(),
-        marker_authority=authority,
-        observed_at=OBSERVED_AT,
-    )
+    for receipt in emitted:
+        error = validate_session_proof(
+            proof=receipt.proof,
+            delivery=delivery,
+            evidence_class=receipt.evidence_class,
+            registration=_registration(),
+            marker_authority=authority,
+            observed_at=OBSERVED_AT,
+        )
 
-    assert error is None, f"the honest path must validate, got {error!r}"
+        assert error is None, f"the honest path must validate, got {error!r}"

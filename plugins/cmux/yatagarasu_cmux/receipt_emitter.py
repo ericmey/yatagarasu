@@ -26,9 +26,12 @@ class _PendingChain:
 
 
 class ReceiptEmitter:
-    """
-    Translates agent.hook.Stop events into core-conformant processed(completed) receipts.
-    Only emits a receipt if the Stop correlates to an accepted prompt in the same session.
+    """Emit the two core-conformant harness receipt stages.
+
+    A correlated ``UserPromptSubmit`` proves prompt acceptance and advances the
+    delivery to ``in-session``. Its later correlated ``Stop`` proves turn
+    completion and advances the same delivery to ``processed(completed)``.
+    Neither stage may stand in for or jump over the other.
     """
 
     def __init__(
@@ -87,11 +90,33 @@ class ReceiptEmitter:
                 context = self._delivery_lookup(pending.decoded_marker.delivery_id)
                 if context:
                     delivery, core_marker = context
+                    if not delivery.binding_id:
+                        return
                     # The prompt correlation fields were produced from the
                     # observed DerivedEvent. Never replace them from the
                     # authoritative lookup or core compares a value with
                     # itself and the guard can no longer fail.
                     chain = [pending.input_event, pending.prompt_event, event]
+                    proof = SessionProof(
+                        session_id=event.session_id,
+                        marker=core_marker,
+                        source_events=tuple(chain),
+                    )
+                    receipt = Receipt(
+                        receipt_id=f"rec-{event.source_event_id}",
+                        event_id=delivery.event_id,
+                        delivery_id=delivery.delivery_id,
+                        attempt_id=delivery.attempt_id,
+                        binding_id=delivery.binding_id,
+                        evidence_provider_id=self._provider_id,
+                        evidence_class=EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+                        proof_method="cmux.event_bus.harness_hook_relay",
+                        observed_at=observed_at,
+                        source_event_id=event.source_event_id,
+                        proof=proof,
+                    )
+
+                    self._core(receipt)
                     self._active_chains[(workspace_key, event.session_id)] = (
                         delivery,
                         core_marker,
