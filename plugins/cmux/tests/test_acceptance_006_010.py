@@ -20,6 +20,7 @@ from yatagarasu_cmux import (
     EventStreamResident,
     Injector,
     Marker,
+    NotificationLifecycle,
     SubmitOutcome,
     UnixCmuxSocketClient,
 )
@@ -155,11 +156,153 @@ def test_y_cmux_006_slow_consumer_reconnect_has_no_double_injection(
     }
 
 
-@pytest.mark.skip(
-    reason="Y-CMUX-007 requires the production notification lifecycle in issue #23"
-)
-def test_y_cmux_007_nonfocused_banner_survives_workspace_visibility() -> None:
+def test_y_cmux_007_nonfocused_banner_survives_workspace_visibility(tmp_path) -> None:
     """Reopen SEV-1 if workspace visibility withdraws seat B's banner."""
+    socket_path = short_socket_path(tmp_path, "acceptance-007")
+    cmux = _NotificationCmux()
+    with (
+        CmuxSocketHarness(socket_path, [], command_handler=cmux.handle) as harness,
+        NotificationLifecycle(
+            tmp_path / "notifications.sqlite",
+            client=UnixCmuxSocketClient(socket_path),
+            suppress_only_focused_surface=True,
+            per_seat_cap=4,
+            mailbox_ttl_s=3_600,
+            clock=lambda: 100.0,
+        ) as lifecycle,
+    ):
+        banner = lifecycle.publish(
+            event_id="event-007-b",
+            delivery_id="delivery-007-b",
+            seat_id="seat-b",
+            workspace_id="workspace-shared",
+            surface_id="surface-b-nonfocused",
+            title="Yatagarasu",
+            body="INFO for seat B",
+        )
+
+        # Making the shared workspace visible emits no lifecycle evidence.
+        # In particular it cannot call notification.dismiss for seat B.
+        still_present = cmux.notification(banner.notification_id)
+        dismiss_before_receipt = [
+            request
+            for request in harness.command_requests
+            if request["method"] == "notification.dismiss"
+        ]
+        rejected_cleanup = lifecycle.on_receipt(
+            event_id="event-007-b",
+            delivery_id="delivery-007-b",
+            status="rejected",
+            state="in-session",
+            evidence_class="harness.prompt_accepted",
+        )
+        transport_only_cleanup = lifecycle.on_receipt(
+            event_id="event-007-b",
+            delivery_id="delivery-007-b",
+            status="accepted",
+            state="transport-submitted",
+            evidence_class="harness.prompt_accepted",
+        )
+        wrong_event_cleanup = lifecycle.on_receipt(
+            event_id="event-007-a",
+            delivery_id="delivery-007-b",
+            status="accepted",
+            state="in-session",
+            evidence_class="harness.prompt_accepted",
+        )
+        accepted_cleanup = lifecycle.on_receipt(
+            event_id="event-007-b",
+            delivery_id="delivery-007-b",
+            status="accepted",
+            state="in-session",
+            evidence_class="harness.prompt_accepted",
+        )
+
+    observations = {
+        "created": still_present is not None,
+        "target_workspace": still_present["workspace_id"],
+        "target_surface": still_present["surface_id"],
+        "dismiss_before_receipt": len(dismiss_before_receipt),
+        "rejected_receipt_dismissed": rejected_cleanup,
+        "transport_only_dismissed": transport_only_cleanup,
+        "wrong_event_dismissed": wrong_event_cleanup,
+        "accepted_in_session_dismissed": accepted_cleanup,
+        "remaining_notification_count": len(cmux.notifications),
+        "focus_mutation_count": len(
+            [
+                request
+                for request in harness.command_requests
+                if ".focus" in str(request["method"])
+            ]
+        ),
+    }
+    assert observations == {
+        "created": True,
+        "target_workspace": "workspace-shared",
+        "target_surface": "surface-b-nonfocused",
+        "dismiss_before_receipt": 0,
+        "rejected_receipt_dismissed": False,
+        "transport_only_dismissed": False,
+        "wrong_event_dismissed": False,
+        "accepted_in_session_dismissed": True,
+        "remaining_notification_count": 0,
+        "focus_mutation_count": 0,
+    }
+
+
+class _NotificationCmux:
+    """Protocol-faithful notification store behind the real Unix harness."""
+
+    def __init__(self) -> None:
+        self.notifications: list[dict[str, object]] = []
+        self.next_id = 1
+
+    def notification(self, notification_id: str) -> dict[str, object] | None:
+        return next(
+            (item for item in self.notifications if item["id"] == notification_id),
+            None,
+        )
+
+    def handle(self, request: dict[str, object]) -> dict[str, object]:
+        method = request["method"]
+        params = request.get("params")
+        assert isinstance(params, dict)
+        if method == "notification.create_for_target":
+            notification = {
+                "id": f"notification-{self.next_id}",
+                "workspace_id": params["workspace_id"],
+                "surface_id": params["surface_id"],
+                "title": params["title"],
+                "subtitle": params["subtitle"],
+                "body": params["body"],
+                "is_read": False,
+            }
+            self.next_id += 1
+            self.notifications.append(notification)
+            return {
+                "ok": True,
+                "result": {
+                    "workspace_id": params["workspace_id"],
+                    "surface_id": params["surface_id"],
+                },
+            }
+        if method == "notification.list":
+            return {"ok": True, "result": {"notifications": self.notifications}}
+        if method == "notification.dismiss":
+            before = len(self.notifications)
+            self.notifications = [
+                item for item in self.notifications if item["id"] != params["id"]
+            ]
+            if len(self.notifications) == before:
+                return {
+                    "ok": False,
+                    "error": {"code": "not_found", "message": "not found"},
+                }
+            return {"ok": True, "result": {"dismissed": 1}}
+        return {
+            "ok": False,
+            "error": {"code": "method_not_found", "message": str(method)},
+        }
 
 
 def _delivery() -> Delivery:
