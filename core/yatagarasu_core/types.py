@@ -44,6 +44,77 @@ class ProviderKind(StrEnum):
     COMMS_VIEW = "comms-view"
 
 
+class SourceKind(StrEnum):
+    DIRECT_HOOK = "direct-hook"
+    EVENT_BUS = "event-bus"
+
+
+class CorrelationRule(StrEnum):
+    CMUX_HARNESS_CHAIN = "cmux-harness-chain"
+
+
+class BindingState(StrEnum):
+    ACTIVE = "active"
+    REVOKED = "revoked"
+    SUPERSEDED = "superseded"
+
+
+@dataclass(frozen=True, slots=True)
+class ProofMethodRegistration:
+    proof_method: str
+    source_kind: SourceKind
+    source_instance_id: str
+    correlation_rule: CorrelationRule
+    evidence_classes: frozenset[EvidenceClass]
+
+
+@dataclass(frozen=True, slots=True)
+class SessionBinding:
+    binding_id: str
+    recipient_id: str
+    provider_id: str
+    adapter_instance_id: str
+    harness: str
+    session_id: str
+    established_at: str
+    expires_at: str
+    proof_methods: tuple[ProofMethodRegistration, ...]
+    state: BindingState = BindingState.ACTIVE
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryMarker:
+    schema_version: int
+    event_id: str
+    delivery_id: str
+    attempt_id: str
+    binding_id: str
+    authority_scope: str
+    issued_at: str
+    expires_at: str
+    signature: str
+
+
+@dataclass(frozen=True, slots=True)
+class SourceEventRef:
+    source_instance_id: str
+    boot_id: str
+    seq: int
+    source_event_id: str
+    event_name: str
+    session_id: str | None = None
+    binding_id: str | None = None
+    marker_signature: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class SessionProof:
+    session_id: str
+    marker: DeliveryMarker
+    source_events: tuple[SourceEventRef, ...]
+    turn_id: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class Delivery:
     event_id: str
@@ -73,6 +144,7 @@ class Receipt:
     disposition: Disposition | None = None
     authored_by_provider: bool = False
     infrastructure_event: bool = False
+    proof: SessionProof | None = None
 
 
 @dataclass(frozen=True, slots=True)

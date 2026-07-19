@@ -10,18 +10,28 @@ from pathlib import Path
 
 from yatagarasu_core import (
     CoreStore,
+    CorrelationRule,
     Delivery,
     DeliveryMode,
     DeliveryState,
     Disposition,
     EvidenceClass,
+    MarkerAuthority,
+    ProofMethodRegistration,
     ProviderKind,
     Receipt,
     ReceiptReducer,
+    SessionBinding,
+    SessionProof,
+    SourceEventRef,
+    SourceKind,
 )
 from yatagarasu_core.store import ConcurrentTransitionError
 
 NOW = "2026-07-18T21:00:00Z"
+MARKER_AUTHORITY = MarkerAuthority(b"core-receipt-contract-key")
+PROOF_METHOD = "cmux.event_bus.harness_hook_relay"
+SOURCE_INSTANCE = "cmux-resident-test"
 
 
 def delivery(mode: DeliveryMode, suffix: str = "1") -> Delivery:
@@ -54,6 +64,110 @@ def receipt_for(
         observed_at=NOW,
     )
     return replace(base, **changes)
+
+
+def register_session(store: CoreStore, item: Delivery, provider_id: str) -> None:
+    store.register_session_binding(
+        SessionBinding(
+            binding_id=item.binding_id,
+            recipient_id=item.recipient_id,
+            provider_id=provider_id,
+            adapter_instance_id="adapter-test",
+            harness="codex",
+            session_id="session-test",
+            established_at="2026-07-18T20:00:00Z",
+            expires_at="2026-07-18T22:00:00Z",
+            proof_methods=(
+                ProofMethodRegistration(
+                    proof_method=PROOF_METHOD,
+                    source_kind=SourceKind.EVENT_BUS,
+                    source_instance_id=SOURCE_INSTANCE,
+                    correlation_rule=CorrelationRule.CMUX_HARNESS_CHAIN,
+                    evidence_classes=frozenset(
+                        {
+                            EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+                            EvidenceClass.HARNESS_TURN_COMPLETED,
+                        }
+                    ),
+                ),
+            ),
+        )
+    )
+
+
+def proof_for(
+    item: Delivery,
+    evidence: EvidenceClass,
+    source_event_id: str,
+    prompt_proof: SessionProof | None = None,
+) -> SessionProof:
+    marker = MARKER_AUTHORITY.mint(
+        item,
+        issued_at="2026-07-18T20:59:00Z",
+        expires_at="2026-07-18T21:01:00Z",
+    )
+    if evidence is EvidenceClass.HARNESS_TURN_COMPLETED:
+        assert prompt_proof is not None
+        events = (
+            *prompt_proof.source_events,
+            SourceEventRef(
+                source_instance_id=SOURCE_INSTANCE,
+                boot_id="boot-test",
+                seq=4,
+                source_event_id=source_event_id,
+                event_name="agent.hook.Stop",
+                session_id="session-test",
+            ),
+        )
+    else:
+        events = (
+            SourceEventRef(
+                SOURCE_INSTANCE,
+                "boot-test",
+                1,
+                f"{source_event_id}-input",
+                "surface.input_sent",
+            ),
+            SourceEventRef(
+                SOURCE_INSTANCE,
+                "boot-test",
+                2,
+                f"{source_event_id}-prompt",
+                "workspace.prompt.submitted",
+                binding_id=item.binding_id,
+                marker_signature=marker.signature,
+            ),
+            SourceEventRef(
+                SOURCE_INSTANCE,
+                "boot-test",
+                3,
+                source_event_id,
+                "agent.hook.UserPromptSubmit",
+                session_id="session-test",
+            ),
+        )
+    return SessionProof("session-test", marker, events, turn_id="turn-test")
+
+
+def session_receipt_for(
+    item: Delivery,
+    receipt_id: str,
+    evidence: EvidenceClass,
+    provider_id: str,
+    prompt_proof: SessionProof | None = None,
+    **changes,
+) -> Receipt:
+    source_event_id = f"source-{receipt_id}"
+    return receipt_for(
+        item,
+        receipt_id,
+        evidence,
+        provider_id,
+        proof_method=PROOF_METHOD,
+        source_event_id=source_event_id,
+        proof=proof_for(item, evidence, source_event_id, prompt_proof),
+        **changes,
+    )
 
 
 class FakeCommsView:
@@ -128,7 +242,7 @@ class IntegrityRaceStore(CoreStore):
 class ReceiptContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.store = CoreStore()
-        self.reducer = ReceiptReducer(self.store)
+        self.reducer = ReceiptReducer(self.store, MARKER_AUTHORITY)
 
     def tearDown(self) -> None:
         self.store.close()
@@ -167,6 +281,7 @@ class ReceiptContractTests(unittest.TestCase):
                 EvidenceClass.HARNESS_TURN_COMPLETED,
             },
         )
+        register_session(self.store, item, "fake-session")
 
         premature = self.reducer.submit(
             receipt_for(
@@ -180,16 +295,31 @@ class ReceiptContractTests(unittest.TestCase):
             (premature.status, premature.reason), ("rejected", "invalid_transition")
         )
 
-        states = []
-        for rid, evidence in (
-            ("r-transport", EvidenceClass.TRANSPORT_SUBMIT_ACK),
-            ("r-session", EvidenceClass.HARNESS_PROMPT_ACCEPTED),
-            ("r-complete", EvidenceClass.HARNESS_TURN_COMPLETED),
-        ):
-            result = self.reducer.submit(
-                receipt_for(item, rid, evidence, "fake-session")
+        transport = self.reducer.submit(
+            receipt_for(
+                item,
+                "r-transport",
+                EvidenceClass.TRANSPORT_SUBMIT_ACK,
+                "fake-session",
             )
-            states.append(result.state)
+        )
+        prompt_receipt = session_receipt_for(
+            item,
+            "r-session",
+            EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+            "fake-session",
+        )
+        prompt = self.reducer.submit(prompt_receipt)
+        completed = self.reducer.submit(
+            session_receipt_for(
+                item,
+                "r-complete",
+                EvidenceClass.HARNESS_TURN_COMPLETED,
+                "fake-session",
+                prompt_proof=prompt_receipt.proof,
+            )
+        )
+        states = [transport.state, prompt.state, completed.state]
         self.assertEqual(
             states,
             [
@@ -265,6 +395,7 @@ class ReceiptContractTests(unittest.TestCase):
                 EvidenceClass.HARNESS_TURN_COMPLETED,
             },
         )
+        register_session(self.store, item, "session-dispositions")
 
         invalid_ack = receipt_for(
             item,
@@ -295,14 +426,13 @@ class ReceiptContractTests(unittest.TestCase):
         self.assertEqual(
             self.reducer.submit(invalid_prompt).reason, "disposition_not_allowed"
         )
-        self.reducer.submit(
-            receipt_for(
-                item,
-                "valid-prompt",
-                EvidenceClass.HARNESS_PROMPT_ACCEPTED,
-                "session-dispositions",
-            )
+        prompt_receipt = session_receipt_for(
+            item,
+            "valid-prompt",
+            EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+            "session-dispositions",
         )
+        self.reducer.submit(prompt_receipt)
 
         invalid_completed = receipt_for(
             item,
@@ -315,11 +445,12 @@ class ReceiptContractTests(unittest.TestCase):
             self.reducer.submit(invalid_completed).reason, "disposition_overclaim"
         )
         completed = self.reducer.submit(
-            receipt_for(
+            session_receipt_for(
                 item,
                 "valid-completed",
                 EvidenceClass.HARNESS_TURN_COMPLETED,
                 "session-dispositions",
+                prompt_proof=prompt_receipt.proof,
                 disposition=Disposition.COMPLETED,
             )
         )
@@ -376,7 +507,7 @@ class ReceiptContractTests(unittest.TestCase):
     def _use_integrity_race_store(self):
         self.store.close()
         self.store = IntegrityRaceStore()
-        self.reducer = ReceiptReducer(self.store)
+        self.reducer = ReceiptReducer(self.store, MARKER_AUTHORITY)
         return self._channel_ready()
 
     def test_concurrent_same_receipt_id_returns_duplicate(self):

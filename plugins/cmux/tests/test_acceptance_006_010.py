@@ -21,18 +21,27 @@ from yatagarasu_cmux.journal import InjectionJournal
 
 from yatagarasu_core import (
     CoreStore,
+    CorrelationRule,
     Delivery,
     DeliveryMode,
     Disposition,
     EvidenceClass,
+    MarkerAuthority,
+    ProofMethodRegistration,
     ProviderKind,
     Receipt,
     ReceiptReducer,
+    SessionBinding,
+    SessionProof,
+    SourceEventRef,
+    SourceKind,
 )
 
 PROOF_METHOD = "cmux.event_bus.harness_hook_relay"
 OBSERVED_AT = "2026-07-18T23:40:00Z"
 SIGNING_KEY = b"acceptance-only-signing-key"
+MARKER_AUTHORITY = MarkerAuthority(b"acceptance-core-marker-key")
+SOURCE_INSTANCE = "cmux-acceptance-resident"
 
 
 @pytest.mark.skip(
@@ -67,6 +76,8 @@ def _receipt(
     provider_id: str,
     evidence_class: EvidenceClass,
     disposition: Disposition | None = None,
+    proof: SessionProof | None = None,
+    source_event_id: str | None = None,
 ) -> Receipt:
     return Receipt(
         receipt_id=receipt_id,
@@ -78,9 +89,63 @@ def _receipt(
         evidence_class=evidence_class,
         proof_method=PROOF_METHOD,
         observed_at=OBSERVED_AT,
-        source_event_id=f"source-{receipt_id}",
+        source_event_id=source_event_id or f"source-{receipt_id}",
         disposition=disposition,
+        proof=proof,
     )
+
+
+def _proof(
+    delivery: Delivery,
+    evidence: EvidenceClass,
+    prompt: SessionProof | None = None,
+) -> SessionProof:
+    marker = MARKER_AUTHORITY.mint(
+        delivery,
+        issued_at="2026-07-18T23:39:00Z",
+        expires_at="2026-07-18T23:41:00Z",
+    )
+    if evidence is EvidenceClass.HARNESS_TURN_COMPLETED:
+        assert prompt is not None
+        events = (
+            *prompt.source_events,
+            SourceEventRef(
+                SOURCE_INSTANCE,
+                "boot-acceptance",
+                4,
+                "source-stop",
+                "agent.hook.Stop",
+                session_id="session-acceptance",
+            ),
+        )
+    else:
+        events = (
+            SourceEventRef(
+                SOURCE_INSTANCE,
+                "boot-acceptance",
+                1,
+                "source-input",
+                "surface.input_sent",
+            ),
+            SourceEventRef(
+                SOURCE_INSTANCE,
+                "boot-acceptance",
+                2,
+                "source-prompt",
+                "workspace.prompt.submitted",
+                binding_id=delivery.binding_id,
+                marker_signature=marker.signature,
+            ),
+            SourceEventRef(
+                SOURCE_INSTANCE,
+                "boot-acceptance",
+                3,
+                "source-hook",
+                "agent.hook.UserPromptSubmit",
+                session_id="session-acceptance",
+            ),
+        )
+    return SessionProof("session-acceptance", marker, events, turn_id="turn-008")
 
 
 def _session_reducer() -> tuple[CoreStore, ReceiptReducer, Delivery]:
@@ -97,7 +162,33 @@ def _session_reducer() -> tuple[CoreStore, ReceiptReducer, Delivery]:
             EvidenceClass.HARNESS_TURN_COMPLETED,
         },
     )
-    return store, ReceiptReducer(store), delivery
+    store.register_session_binding(
+        SessionBinding(
+            binding_id=delivery.binding_id,
+            recipient_id=delivery.recipient_id,
+            provider_id="cmux-session",
+            adapter_instance_id="adapter-acceptance",
+            harness="codex",
+            session_id="session-acceptance",
+            established_at="2026-07-18T23:00:00Z",
+            expires_at="2026-07-19T00:00:00Z",
+            proof_methods=(
+                ProofMethodRegistration(
+                    proof_method=PROOF_METHOD,
+                    source_kind=SourceKind.EVENT_BUS,
+                    source_instance_id=SOURCE_INSTANCE,
+                    correlation_rule=CorrelationRule.CMUX_HARNESS_CHAIN,
+                    evidence_classes=frozenset(
+                        {
+                            EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+                            EvidenceClass.HARNESS_TURN_COMPLETED,
+                        }
+                    ),
+                ),
+            ),
+        )
+    )
+    return store, ReceiptReducer(store, MARKER_AUTHORITY), delivery
 
 
 def test_y_cmux_008_existing_evidence_classes_advance_only_linearly() -> None:
@@ -108,27 +199,49 @@ def test_y_cmux_008_existing_evidence_classes_advance_only_linearly() -> None:
     """
     store, reducer, delivery = _session_reducer()
     try:
-        observations: list[tuple[str, str, str | None]] = []
-        for receipt_id, evidence in (
-            ("receipt-transport", EvidenceClass.TRANSPORT_SUBMIT_ACK),
-            ("receipt-prompt", EvidenceClass.HARNESS_PROMPT_ACCEPTED),
-            ("receipt-stop", EvidenceClass.HARNESS_TURN_COMPLETED),
-        ):
-            result = reducer.submit(
-                _receipt(
-                    delivery,
-                    receipt_id=receipt_id,
-                    provider_id="cmux-session",
-                    evidence_class=evidence,
-                )
+        transport_receipt = _receipt(
+            delivery,
+            receipt_id="receipt-transport",
+            provider_id="cmux-session",
+            evidence_class=EvidenceClass.TRANSPORT_SUBMIT_ACK,
+        )
+        prompt_proof = _proof(delivery, EvidenceClass.HARNESS_PROMPT_ACCEPTED)
+        prompt_receipt = _receipt(
+            delivery,
+            receipt_id="receipt-prompt",
+            provider_id="cmux-session",
+            evidence_class=EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+            proof=prompt_proof,
+            source_event_id=prompt_proof.source_events[-1].source_event_id,
+        )
+        completed_proof = _proof(
+            delivery, EvidenceClass.HARNESS_TURN_COMPLETED, prompt_proof
+        )
+        completed_receipt = _receipt(
+            delivery,
+            receipt_id="receipt-stop",
+            provider_id="cmux-session",
+            evidence_class=EvidenceClass.HARNESS_TURN_COMPLETED,
+            proof=completed_proof,
+            source_event_id=completed_proof.source_events[-1].source_event_id,
+        )
+        results = [
+            reducer.submit(transport_receipt),
+            reducer.submit(prompt_receipt),
+            reducer.submit(completed_receipt),
+        ]
+        observations = [
+            (
+                receipt.evidence_class.value,
+                result.state.value if result.state else "none",
+                result.disposition.value if result.disposition else None,
             )
-            observations.append(
-                (
-                    evidence.value,
-                    result.state.value if result.state else "none",
-                    result.disposition.value if result.disposition else None,
-                )
+            for receipt, result in zip(
+                (transport_receipt, prompt_receipt, completed_receipt),
+                results,
+                strict=True,
             )
+        ]
 
         assert observations == [
             ("transport.submit_ack", "transport-submitted", None),
@@ -200,12 +313,15 @@ def test_y_cmux_008_turn_end_never_proves_answered() -> None:
                 evidence_class=EvidenceClass.TRANSPORT_SUBMIT_ACK,
             )
         )
+        prompt_proof = _proof(delivery, EvidenceClass.HARNESS_PROMPT_ACCEPTED)
         reducer.submit(
             _receipt(
                 delivery,
                 receipt_id="receipt-prompt",
                 provider_id="cmux-session",
                 evidence_class=EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+                proof=prompt_proof,
+                source_event_id=prompt_proof.source_events[-1].source_event_id,
             )
         )
         result = reducer.submit(
@@ -232,11 +348,41 @@ def test_y_cmux_008_turn_end_never_proves_answered() -> None:
         store.close()
 
 
-@pytest.mark.skip(
-    reason="Y-CMUX-008 full proof bundle requires production core issue #24"
-)
 def test_y_cmux_008_full_marker_binding_and_source_chain_is_required() -> None:
     """Reopen SEV-1 if session_id alone can advance a delivery."""
+    store, reducer, delivery = _session_reducer()
+    try:
+        reducer.submit(
+            _receipt(
+                delivery,
+                receipt_id="receipt-transport",
+                provider_id="cmux-session",
+                evidence_class=EvidenceClass.TRANSPORT_SUBMIT_ACK,
+            )
+        )
+        session_only = reducer.submit(
+            _receipt(
+                delivery,
+                receipt_id="receipt-session-only",
+                provider_id="cmux-session",
+                evidence_class=EvidenceClass.HARNESS_PROMPT_ACCEPTED,
+                source_event_id="source-hook",
+            )
+        )
+
+        assert {
+            "status": session_only.status,
+            "reason": session_only.reason,
+            "durable_state": store.get_delivery(delivery.delivery_id).state.value,
+            "rejection_audit": store.rejections_for(delivery.delivery_id)[-1]["reason"],
+        } == {
+            "status": "rejected",
+            "reason": "session_proof_required",
+            "durable_state": "transport-submitted",
+            "rejection_audit": "session_proof_required",
+        }
+    finally:
+        store.close()
 
 
 @pytest.mark.skip(
