@@ -298,6 +298,20 @@ class EventOutbox:
         ).fetchall()
         return tuple(dict(row) for row in rows)
 
+    def outbox_events(self, source_instance_id: str) -> tuple[DerivedEvent, ...]:
+        """Rehydrate projected evidence in its original durable order."""
+        return tuple(
+            DerivedEvent(
+                source_instance_id=row["source_instance_id"],
+                boot_id=row["boot_id"],
+                seq=row["seq"],
+                source_event_id=row["source_event_id"],
+                event_name=row["event_name"],
+                event_json=row["event_json"],
+            )
+            for row in self.outbox_rows(source_instance_id)
+        )
+
     def audit_rows(self, source_instance_id: str) -> tuple[dict[str, object], ...]:
         rows = self._db.execute(
             "SELECT * FROM stream_audit WHERE source_instance_id = ? ORDER BY audit_id",

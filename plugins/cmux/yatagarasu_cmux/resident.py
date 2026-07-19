@@ -18,6 +18,8 @@ class ReceiptProducer(Protocol):
     replayable because the resident has not advanced its cursor yet.
     """
 
+    def recover(self, events: tuple[DerivedEvent, ...]) -> None: ...
+
     def observe(self, event: DerivedEvent) -> None: ...
 
 
@@ -68,6 +70,11 @@ class EventStreamResident:
         replay_count = 0
         inserted = 0
         duplicates = 0
+
+        if self.receipt_producer is not None:
+            self.receipt_producer.recover(
+                self.outbox.outbox_events(self.source_instance_id)
+            )
 
         for _ in range(max_connections):
             durable_before = self.outbox.cursor(self.source_instance_id)
