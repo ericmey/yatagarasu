@@ -50,6 +50,16 @@ def load_or_create_marker_key(config: RuntimeConfig) -> bytes:
     restart would invalidate every marker already sitting in a composer or
     awaiting a Stop, turning correlated deliveries into uncorrelated ones —
     silent loss that looks like the agent simply never answered.
+
+    NOTE (2026-07-19, issue #57 sweep): No consumer currently reads the
+    returned key. The marker verification path moved to
+    ``core.MarkerAuthority.validate`` and ``EventProjector`` no longer
+    threads a signing key through. This function is retained so that the
+    persistence and rotation invariants are preserved if a future caller
+    needs them, but the key it produces is not consumed anywhere in the
+    production code path today. The next person to reach for this should
+    first verify the consumer-side gap is closed (per #57's
+    stored-and-never-read discipline).
     """
     path = marker_key_path(config)
 
@@ -115,7 +125,6 @@ class Supervisor:
             source_instance_id=self.config.source_instance_id,
             client=client,
             outbox=outbox,
-            marker_key=load_or_create_marker_key(self.config),
             receipt_producer=self.receipt_producer,
         )
         return resident, outbox

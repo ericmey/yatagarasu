@@ -82,7 +82,7 @@ def mint(key: bytes, delivery_id: str) -> Marker:
 _YGR1_RE = re.compile(r"(ygr1\.[A-Za-z0-9_-]+)")
 
 
-def extract(key: bytes | None, haystack: str | None) -> DeliveryMarker | None:
+def extract(haystack: str | None) -> DeliveryMarker | None:
     """Extract and parse a marker from arbitrary text.
 
     Returns ``None`` when no decodable marker is present. Note that decoding is
@@ -90,6 +90,12 @@ def extract(key: bytes | None, haystack: str | None) -> DeliveryMarker | None:
     delivery lookup to ensure the signature and binding are correct.
 
     The caller is expected to keep only the returned marker and drop ``haystack``.
+
+    Note: this function used to take a ``key`` parameter that was never read in
+    the body. The signature was a vestige of an earlier authorization path that
+    moved to core; the marker verification now lives in
+    ``core.MarkerAuthority.validate``. Removal was driven by issue #57's
+    stored-and-never-read sweep.
     """
     if not haystack:
         return None

@@ -46,7 +46,6 @@ class EventStreamResident:
         source_instance_id: str,
         client: UnixCmuxSocketClient,
         outbox: EventOutbox,
-        marker_key: bytes,
         receipt_producer: ReceiptProducer | None = None,
     ) -> None:
         if not source_instance_id:
@@ -55,9 +54,7 @@ class EventStreamResident:
         self.client = client
         self.outbox = outbox
         self.receipt_producer = receipt_producer
-        self.projector = EventProjector(
-            source_instance_id=source_instance_id, marker_key=marker_key
-        )
+        self.projector = EventProjector(source_instance_id=source_instance_id)
 
     def run(self, *, max_connections: int = 1) -> ResidentRun:
         """Run a bounded reconnect loop suitable for a runtime supervisor."""

@@ -134,7 +134,6 @@ def test_y_cmux_006_slow_consumer_reconnect_has_no_double_injection(
                     source_instance_id="cmux-resident-006",
                     client=UnixCmuxSocketClient(socket_path),
                     outbox=outbox,
-                    marker_key=SIGNING_KEY,
                 ).run(max_connections=2)
 
             durable_cursor = outbox.cursor("cmux-resident-006")

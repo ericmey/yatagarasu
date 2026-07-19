@@ -223,7 +223,7 @@ def test_y_cmux_002_marker_is_recoverable_from_sent_text_on_unknown() -> None:
     # mint returns a new nonce/signature each call, so a second mint would
     # never match the embedded one). The whole point of the marker is that
     # it's recoverable from the host event payload.
-    recovered = extract(None, sent_text)
+    recovered = extract(sent_text)
     assert recovered is not None, (
         f"marker must be extractable from sent text {sent_text!r}; "
         "the journal layer relies on this for crash-window reconciliation."

@@ -115,11 +115,10 @@ class StreamAck:
 class EventProjector:
     """Turn a local-sensitive bus event into content-free durable evidence."""
 
-    def __init__(self, *, source_instance_id: str, marker_key: bytes) -> None:
+    def __init__(self, *, source_instance_id: str) -> None:
         if not source_instance_id:
             raise ValueError("source instance ID must not be empty")
         self.source_instance_id = source_instance_id
-        self.marker_key = marker_key
 
     def project(
         self, frame: dict[str, object], *, expected_boot_id: str
@@ -158,7 +157,7 @@ class EventProjector:
             }
             preview = payload.get("message_preview")
             if isinstance(preview, str):
-                marker = extract(None, preview)
+                marker = extract(preview)
                 if marker is not None:
                     # In core format, the encoded payload is stored back into message_preview
                     safe_payload["message_preview"] = MarkerAuthority.encode(marker)

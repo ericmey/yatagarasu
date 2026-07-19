@@ -204,7 +204,7 @@ def test_marker_is_embedded_and_recoverable():
     _deliver(inj, "d-10")
 
     _, text = transport.sent[0]
-    found = extract(None, text)
+    found = extract(text)
     assert found is not None
     assert found.delivery_id == "d-10"
     assert "hello" in text
@@ -265,12 +265,12 @@ def test_forged_marker_is_rejected():
     real_text = authority.encode(real)
     forged_text = real_text[:-10] + "0" * 10
 
-    assert extract(None, real_text) is not None
+    assert extract(real_text) is not None
     # Forgeries are now caught at validation time in core, not extraction time.
     # Therefore, extract() will either return None if parsing fails, OR return a DeliveryMarker
     # that fails later. If it fails to parse (corrupted JSON or base64), it's None.
     # In this case, we corrupted the base64, so it fails to parse and returns None.
-    assert extract(None, forged_text) is None
+    assert extract(forged_text) is None
 
 
 def test_each_attempt_gets_a_distinct_marker():

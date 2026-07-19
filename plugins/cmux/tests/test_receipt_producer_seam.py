@@ -201,7 +201,6 @@ def test_receipt_sink_failure_does_not_advance_the_stream_cursor(tmp_path) -> No
                 source_instance_id=SOURCE_INSTANCE,
                 client=UnixCmuxSocketClient(socket_path),
                 outbox=outbox,
-                marker_key=b"legacy-projector-key",
                 receipt_producer=FailingProducer(),
             )
             with pytest.raises(RuntimeError, match="receipt sink unavailable"):

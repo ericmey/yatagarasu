@@ -116,7 +116,12 @@ def test_doctor_reports_configuration_without_minting_the_key(config, capsys):
 
     assert cmd_doctor(args) == 0
     assert not marker_key_path(config).exists()
-    assert "not yet minted" in capsys.readouterr().out
+    # The doctor command previously printed a "marker_key=..." line. That
+    # diagnostic was removed with the marker_key parameter (issue #57
+    # sweep): no consumer reads the key, so printing its path is no
+    # longer load-bearing. The load-bearing assertion is that doctor
+    # does NOT mint the key (above); the printed output no longer
+    # needs to mention it.
 
 
 def test_a_missing_socket_is_an_error_not_a_traceback(tmp_path, capsys):
