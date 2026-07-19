@@ -170,7 +170,7 @@ class Harness:
         (signed HMAC over the four-key contract) per attempt, embeds
         it in the injected text, and the host submit event carries
         the marker for exact correlation. session_id alone is
-        session_id alone is insufficient; the marker is what makes
+        insufficient; the marker is what makes
         `BusObserver.observe(marker, timeout_s)` authoritative.
         """
         # Issue #22 builds the production event-stream resident. Until
@@ -212,7 +212,6 @@ class Harness:
         # of mutating the frozen _KnobState via object.__setattr__.
         # Bypassing frozen bypasses the immutability contract.
         self.knob = dataclasses.replace(self.knob, suppress_composer_submit=on)
-        ...
 
     def restart_cmux(self, *, boot_id: str | None = None) -> None:
         """Kill cmux (or rotate boot_id if boot_id given) and reconnect.
@@ -282,7 +281,20 @@ class Harness:
         NOT emit the paired `workspace.prompt.submitted` for the
         test's own injects (the plugin must NOT see it).
         """
-        ...
+        # Issue #22 (production event-stream resident) owns the
+        # events.jsonl tail reader. Until it lands, this method's
+        # docstring describes load-bearing behaviour that does not
+        # exist; raise NotImplementedError with the issue reference
+        # so an early caller is told exactly what is missing rather
+        # than silently getting nothing — the same vacuous-test
+        # failure mode the other six placeholder levers were fixed
+        # to remove (round 3 of this PR's Copilot review).
+        raise NotImplementedError(
+            "Harness._drain_events() awaits issue #22 (production "
+            "event-stream resident). The docstring describes event "
+            "tailing with suppress_composer_submit handling; the body "
+            "is the production reader that lands with #22."
+        )
 
     def close(self) -> None:
         if self._events_tail is not None:
