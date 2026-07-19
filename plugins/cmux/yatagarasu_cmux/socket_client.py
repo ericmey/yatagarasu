@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import socket
 from contextlib import AbstractContextManager
+from itertools import count
 from pathlib import Path
 from types import TracebackType
 
@@ -75,6 +76,38 @@ class UnixCmuxSocketClient:
         self.socket_path = str(socket_path)
         self.password = password
         self.connect_timeout_s = connect_timeout_s
+        self._request_ids = count(1)
+
+    def call(self, method: str, params: dict[str, object] | None = None) -> object:
+        """Execute one v2 RPC on a fresh non-stream command connection.
+
+        Notification and admission operations must never borrow the resident's
+        stream socket: one delayed command response would otherwise stop event
+        consumption and manufacture a slow-consumer disconnect.
+        """
+        request_id = f"yatagarasu-command-{next(self._request_ids)}"
+        sock = self._connect()
+        try:
+            with sock.makefile("rb") as reader:
+                self._authenticate(sock, reader)
+                self._write_json(
+                    sock,
+                    {
+                        "id": request_id,
+                        "method": method,
+                        "params": params or {},
+                    },
+                )
+                response = self._read_json(reader)
+        finally:
+            sock.close()
+        if response.get("id") != request_id:
+            raise StreamProtocolError("CMUX command response id mismatch")
+        if response.get("ok") is not True:
+            error = response.get("error")
+            code = error.get("code") if isinstance(error, dict) else "unknown"
+            raise StreamProtocolError(f"CMUX command failed: {method}: {code}")
+        return response.get("result")
 
     def open_stream(self, *, after_seq: int | None) -> StreamConnection:
         sock = self._connect()
