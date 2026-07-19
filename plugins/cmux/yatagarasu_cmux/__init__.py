@@ -5,6 +5,15 @@ landed. Declares ``session-bound`` only: it never emits participant evidence and
 never synthesizes session entry it cannot observe.
 """
 
+from .event_outbox import (
+    CommitDisposition,
+    DerivedEvent,
+    EventCursor,
+    EventOutbox,
+    OutboxError,
+    SnapshotBaseline,
+    default_event_outbox_path,
+)
 from .injector import (
     EVENT_INPUT_SENT,
     EVENT_PROMPT_SUBMITTED,
@@ -16,22 +25,51 @@ from .injector import (
     Transport,
 )
 from .marker import Marker, MarkerError, extract, mint, redact
+from .notifications import (
+    IN_SESSION_EVIDENCE,
+    NotificationLifecycle,
+    NotificationLifecycleError,
+    NotificationRecord,
+    validate_hook_effects,
+)
 from .outcome import SubmitOutcome, SubmitResult
+from .resident import EventStreamResident, ResidentRun
+from .socket_client import SNAPSHOT_METHODS, UnixCmuxSocketClient
+from .stream_protocol import EventProjector, StreamAck, StreamProtocolError
 
 __all__ = [
     "EVENT_INPUT_SENT",
     "EVENT_PROMPT_SUBMITTED",
+    "IN_SESSION_EVIDENCE",
     "REQUIRED_EVENTS",
+    "SNAPSHOT_METHODS",
     "BusObserver",
+    "CommitDisposition",
+    "DerivedEvent",
+    "EventCursor",
+    "EventOutbox",
+    "EventProjector",
+    "EventStreamResident",
     "Injector",
     "Marker",
     "MarkerError",
+    "NotificationLifecycle",
+    "NotificationLifecycleError",
+    "NotificationRecord",
+    "OutboxError",
+    "ResidentRun",
     "ResolutionError",
     "Resolver",
+    "SnapshotBaseline",
+    "StreamAck",
+    "StreamProtocolError",
     "SubmitOutcome",
     "SubmitResult",
     "Transport",
+    "UnixCmuxSocketClient",
+    "default_event_outbox_path",
     "extract",
     "mint",
     "redact",
+    "validate_hook_effects",
 ]

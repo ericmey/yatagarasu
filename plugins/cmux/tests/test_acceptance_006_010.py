@@ -14,11 +14,17 @@ from collections.abc import Iterable
 import pytest
 from yatagarasu_cmux import (
     EVENT_INPUT_SENT,
+    EVENT_PROMPT_SUBMITTED,
+    EventCursor,
+    EventOutbox,
+    EventStreamResident,
     Injector,
     Marker,
+    NotificationLifecycle,
     SubmitOutcome,
+    UnixCmuxSocketClient,
 )
-from yatagarasu_cmux.journal import InjectionJournal
+from yatagarasu_cmux.journal import InjectionJournal, JournalState
 
 from yatagarasu_core import (
     BroadcastKernel,
@@ -39,6 +45,14 @@ from yatagarasu_core import (
     SourceKind,
 )
 
+from .socket_harness import (
+    CmuxSocketHarness,
+    ack,
+    event,
+    short_socket_path,
+    slow_consumer,
+)
+
 PROOF_METHOD = "cmux.event_bus.harness_hook_relay"
 OBSERVED_AT = "2026-07-18T23:40:00Z"
 SIGNING_KEY = b"acceptance-only-signing-key"
@@ -46,18 +60,249 @@ MARKER_AUTHORITY = MarkerAuthority(b"acceptance-core-marker-key")
 SOURCE_INSTANCE = "cmux-acceptance-resident"
 
 
-@pytest.mark.skip(
-    reason="Y-CMUX-006 requires the production event-stream resident in issue #22"
-)
-def test_y_cmux_006_slow_consumer_reconnect_has_no_double_injection() -> None:
+def test_y_cmux_006_slow_consumer_reconnect_has_no_double_injection(
+    tmp_path,
+) -> None:
     """Reopen SEV-1 if replay causes any delivery to enter a pane twice."""
+    socket_path = short_socket_path(tmp_path, "acceptance-006")
+    transport = _Transport()
+    with InjectionJournal(tmp_path / "injection.sqlite") as journal:
+        injector = Injector(
+            resolver=_Resolver(),
+            transport=transport,
+            observer=_Observer((EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED)),
+            signing_key=SIGNING_KEY,
+            on_effect_pending=lambda delivery_id, _surface: journal.prepare(
+                delivery_id=delivery_id,
+                binding_id="binding-006",
+                seat_id="yua",
+                marker="marker-006",
+                now=1.0,
+            ),
+        )
+        submitted = injector.deliver("yua", "delivery-006", "one turn only")
+        assert submitted.outcome is SubmitOutcome.SUBMITTED
+        journal.settle(
+            delivery_id="delivery-006",
+            state=JournalState.INJECTED,
+            now=2.0,
+            source_events=submitted.source_events,
+        )
+
+        scripts = [
+            [
+                ack(
+                    "boot-006",
+                    replay_count=0,
+                    gap=False,
+                    requested_after_seq=None,
+                    latest_seq=1,
+                ),
+                event("boot-006", 1, name="surface.input_sent"),
+                slow_consumer(5),
+            ],
+            [
+                ack(
+                    "boot-006",
+                    replay_count=4,
+                    gap=False,
+                    requested_after_seq=1,
+                    latest_seq=5,
+                ),
+                *(event("boot-006", seq) for seq in range(2, 6)),
+            ],
+        ]
+        with EventOutbox(tmp_path / "event-outbox.sqlite") as outbox:
+            with CmuxSocketHarness(socket_path, scripts) as harness:
+                run = EventStreamResident(
+                    source_instance_id="cmux-resident-006",
+                    client=UnixCmuxSocketClient(socket_path),
+                    outbox=outbox,
+                    marker_key=SIGNING_KEY,
+                ).run(max_connections=2)
+
+            durable_cursor = outbox.cursor("cmux-resident-006")
+            audit = outbox.audit_rows("cmux-resident-006")
+            source_rows = outbox.outbox_rows("cmux-resident-006")
+
+        injection_count_after_replay = len(transport.sent)
+        double_injection = (
+            {"delivery-006"} if injection_count_after_replay != 1 else set()
+        )
+        observations = {
+            "slow_consumer_received": run.slow_consumer_received,
+            "disconnect_at_seq": run.disconnect_at_seq,
+            "S_persisted": run.reconnect_after_seq[1],
+            "reconnect_at_seq": harness.stream_requests[1]["params"]["after_seq"],
+            "replay_event_count": run.replay_event_count,
+            "outbox_event_count": len(source_rows),
+            "injection_event_count": injection_count_after_replay,
+            "double_injection.event_id": double_injection,
+            "cursor": durable_cursor,
+            "audit_kinds": [row["kind"] for row in audit],
+        }
+
+    assert observations == {
+        "slow_consumer_received": True,
+        "disconnect_at_seq": 5,
+        "S_persisted": 1,
+        "reconnect_at_seq": 1,
+        "replay_event_count": 4,
+        "outbox_event_count": 5,
+        "injection_event_count": 1,
+        "double_injection.event_id": set(),
+        "cursor": EventCursor("cmux-resident-006", "boot-006", 5),
+        "audit_kinds": ["reconnect_replay"],
+    }
 
 
-@pytest.mark.skip(
-    reason="Y-CMUX-007 requires the production notification lifecycle in issue #23"
-)
-def test_y_cmux_007_nonfocused_banner_survives_workspace_visibility() -> None:
+def test_y_cmux_007_nonfocused_banner_survives_workspace_visibility(tmp_path) -> None:
     """Reopen SEV-1 if workspace visibility withdraws seat B's banner."""
+    socket_path = short_socket_path(tmp_path, "acceptance-007")
+    cmux = _NotificationCmux()
+    with (
+        CmuxSocketHarness(socket_path, [], command_handler=cmux.handle) as harness,
+        NotificationLifecycle(
+            tmp_path / "notifications.sqlite",
+            client=UnixCmuxSocketClient(socket_path),
+            suppress_only_focused_surface=True,
+            per_seat_cap=4,
+            mailbox_ttl_s=3_600,
+            clock=lambda: 100.0,
+        ) as lifecycle,
+    ):
+        banner = lifecycle.publish(
+            event_id="event-007-b",
+            delivery_id="delivery-007-b",
+            seat_id="seat-b",
+            workspace_id="workspace-shared",
+            surface_id="surface-b-nonfocused",
+            title="Yatagarasu",
+            body="INFO for seat B",
+        )
+
+        # Making the shared workspace visible emits no lifecycle evidence.
+        # In particular it cannot call notification.dismiss for seat B.
+        still_present = cmux.notification(banner.notification_id)
+        dismiss_before_receipt = [
+            request
+            for request in harness.command_requests
+            if request["method"] == "notification.dismiss"
+        ]
+        rejected_cleanup = lifecycle.on_receipt(
+            event_id="event-007-b",
+            delivery_id="delivery-007-b",
+            status="rejected",
+            state="in-session",
+            evidence_class="harness.prompt_accepted",
+        )
+        transport_only_cleanup = lifecycle.on_receipt(
+            event_id="event-007-b",
+            delivery_id="delivery-007-b",
+            status="accepted",
+            state="transport-submitted",
+            evidence_class="harness.prompt_accepted",
+        )
+        wrong_event_cleanup = lifecycle.on_receipt(
+            event_id="event-007-a",
+            delivery_id="delivery-007-b",
+            status="accepted",
+            state="in-session",
+            evidence_class="harness.prompt_accepted",
+        )
+        accepted_cleanup = lifecycle.on_receipt(
+            event_id="event-007-b",
+            delivery_id="delivery-007-b",
+            status="accepted",
+            state="in-session",
+            evidence_class="harness.prompt_accepted",
+        )
+
+    observations = {
+        "created": still_present is not None,
+        "target_workspace": still_present["workspace_id"],
+        "target_surface": still_present["surface_id"],
+        "dismiss_before_receipt": len(dismiss_before_receipt),
+        "rejected_receipt_dismissed": rejected_cleanup,
+        "transport_only_dismissed": transport_only_cleanup,
+        "wrong_event_dismissed": wrong_event_cleanup,
+        "accepted_in_session_dismissed": accepted_cleanup,
+        "remaining_notification_count": len(cmux.notifications),
+        "focus_mutation_count": len(
+            [
+                request
+                for request in harness.command_requests
+                if ".focus" in str(request["method"])
+            ]
+        ),
+    }
+    assert observations == {
+        "created": True,
+        "target_workspace": "workspace-shared",
+        "target_surface": "surface-b-nonfocused",
+        "dismiss_before_receipt": 0,
+        "rejected_receipt_dismissed": False,
+        "transport_only_dismissed": False,
+        "wrong_event_dismissed": False,
+        "accepted_in_session_dismissed": True,
+        "remaining_notification_count": 0,
+        "focus_mutation_count": 0,
+    }
+
+
+class _NotificationCmux:
+    """Protocol-faithful notification store behind the real Unix harness."""
+
+    def __init__(self) -> None:
+        self.notifications: list[dict[str, object]] = []
+        self.next_id = 1
+
+    def notification(self, notification_id: str) -> dict[str, object] | None:
+        return next(
+            (item for item in self.notifications if item["id"] == notification_id),
+            None,
+        )
+
+    def handle(self, request: dict[str, object]) -> dict[str, object]:
+        method = request["method"]
+        params = request.get("params")
+        assert isinstance(params, dict)
+        if method == "notification.create_for_target":
+            notification = {
+                "id": f"notification-{self.next_id}",
+                "workspace_id": params["workspace_id"],
+                "surface_id": params["surface_id"],
+                "title": params["title"],
+                "subtitle": params["subtitle"],
+                "body": params["body"],
+                "is_read": False,
+            }
+            self.next_id += 1
+            self.notifications.append(notification)
+            return {
+                "ok": True,
+                "result": {
+                    "workspace_id": params["workspace_id"],
+                    "surface_id": params["surface_id"],
+                },
+            }
+        if method == "notification.list":
+            return {"ok": True, "result": {"notifications": self.notifications}}
+        if method == "notification.dismiss":
+            before = len(self.notifications)
+            self.notifications = [
+                item for item in self.notifications if item["id"] != params["id"]
+            ]
+            if len(self.notifications) == before:
+                return {
+                    "ok": False,
+                    "error": {"code": "not_found", "message": "not found"},
+                }
+            return {"ok": True, "result": {"dismissed": 1}}
+        return {
+            "ok": False,
+            "error": {"code": "method_not_found", "message": str(method)},
+        }
 
 
 def _delivery() -> Delivery:
@@ -546,8 +791,11 @@ class _Transport:
 
 
 class _Observer:
+    def __init__(self, events: tuple[str, ...] = (EVENT_INPUT_SENT,)) -> None:
+        self._events = events
+
     def observe(self, marker: Marker, timeout_s: float) -> Iterable[str]:
-        yield EVENT_INPUT_SENT
+        yield from self._events
 
 
 def test_y_cmux_010_incomplete_busy_submit_holds_and_never_requeues() -> None:
