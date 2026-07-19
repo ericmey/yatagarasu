@@ -78,11 +78,13 @@ def _run_chain(marker_token_in_prompt: str, delivery: Delivery, authoritative):
     )
 
     emitter.observe(
-        SourceEventRef(SOURCE_INSTANCE, "boot", 1, "e1", "surface.input_sent")
+        SourceEventRef(SOURCE_INSTANCE, "boot", 1, "e1", "surface.input_sent"),
+        observed_at=OBSERVED_AT,
     )
     emitter.observe(
         SourceEventRef(SOURCE_INSTANCE, "boot", 2, "e2", "workspace.prompt.submitted"),
         payload={"message_preview": marker_token_in_prompt},
+        observed_at=OBSERVED_AT,
     )
     emitter.observe(
         SourceEventRef(
@@ -92,7 +94,8 @@ def _run_chain(marker_token_in_prompt: str, delivery: Delivery, authoritative):
             "e3",
             "agent.hook.UserPromptSubmit",
             session_id="s-1",
-        )
+        ),
+        observed_at=OBSERVED_AT,
     )
     emitter.observe(
         SourceEventRef(

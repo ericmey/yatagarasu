@@ -221,12 +221,38 @@ def test_forged_marker_is_rejected():
 
 def test_each_attempt_gets_a_distinct_marker():
     """A retry must be distinguishable from the original attempt.
-    Since we are using core minting which does NOT include nonces currently,
-    they actually return identical signatures for identical params.
-    Wait: in core/yatagarasu_core/proofs.py, mint generates a deterministic signature based on the arguments!
-    Let's check `proofs.py`.
+    Core mint is deterministic by attempt_id, not by a random nonce.
+    A retry (new attempt_id) produces a distinct marker; the identical
+    attempt produces an identical marker.
     """
-    pass
+    authority = MarkerAuthority(KEY)
+
+    delivery_1 = Delivery(
+        "ev-12", "d-12", "a-12", "b-12", "yua", DeliveryMode.SESSION_BOUND
+    )
+    m1 = authority.mint(
+        delivery_1, issued_at="2026-07-19T21:00:00Z", expires_at="2026-07-19T21:05:00Z"
+    )
+
+    # Same delivery + attempt -> identical sig
+    delivery_1_duplicate = Delivery(
+        "ev-12", "d-12", "a-12", "b-12", "yua", DeliveryMode.SESSION_BOUND
+    )
+    m1_duplicate = authority.mint(
+        delivery_1_duplicate,
+        issued_at="2026-07-19T21:00:00Z",
+        expires_at="2026-07-19T21:05:00Z",
+    )
+    assert m1.signature == m1_duplicate.signature
+
+    # New attempt -> distinct sig
+    delivery_2 = Delivery(
+        "ev-12", "d-12", "a-12-retry", "b-12", "yua", DeliveryMode.SESSION_BOUND
+    )
+    m2 = authority.mint(
+        delivery_2, issued_at="2026-07-19T21:00:00Z", expires_at="2026-07-19T21:05:00Z"
+    )
+    assert m1.signature != m2.signature
 
 
 @pytest.mark.parametrize("value", ["", None])
@@ -316,4 +342,8 @@ def test_nothing_is_injected_when_minting_fails():
 
 
 def test_empty_key_never_authenticates_a_marker():
-    pass
+    """An empty key makes every signature computable by anyone. Fail closed:
+    a misconfigured deployment must reject markers at construction, not accept forgeries.
+    """
+    with pytest.raises(ValueError, match="marker signing key must not be empty"):
+        MarkerAuthority(b"")
