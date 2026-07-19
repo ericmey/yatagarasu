@@ -59,6 +59,19 @@ evidence at all.
 
 ## Licensing
 
-Not yet chosen. Until a LICENSE file exists, default copyright applies and no
-rights are granted. This repository is public for review tooling and
-transparency, not yet as an open-source offering.
+[MIT](LICENSE). Use it, fork it, ship it.
+
+## Status, plainly
+
+**Nothing here runs yet.** There is no entry point, no service, and no
+deployment — the modules have never touched a live socket. What exists is a
+receipt reducer, a session-transport injector, a durable injection journal, and
+an acceptance suite that is honest about its own gaps: tests that cannot yet be
+proven are **skipped with a tracked issue**, never quietly passed.
+
+The only thing you can run today is the test suite:
+
+```bash
+make install   # dev deps + the four editable subpackages
+make check     # exactly what CI runs: lint, format, tests
+```
