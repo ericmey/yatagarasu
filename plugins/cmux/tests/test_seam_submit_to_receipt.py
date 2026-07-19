@@ -43,10 +43,13 @@ from yatagarasu_core import (
     ProviderKind,
     ReceiptReducer,
 )
+from yatagarasu_core.proofs import MarkerAuthority
 
 NOW = "2026-07-19T14:00:00Z"
 PROVIDER_ID = "cmux-transport-test"
 SIGNING_KEY = b"seam-test-signing-key"
+ISSUED_AT = "2026-07-19T13:59:00Z"
+EXPIRES_AT = "2026-07-19T14:01:00Z"
 
 
 class _Resolver:
@@ -92,7 +95,7 @@ def _injector(events: list[str]) -> Injector:
         resolver=_Resolver(),
         transport=_Transport(),
         observer=_Observer(events),
-        signing_key=SIGNING_KEY,
+        marker_authority=MarkerAuthority(SIGNING_KEY),
         submit_timeout_s=0.05,
     )
 
@@ -129,8 +132,15 @@ class SubmitToReceiptSeam(unittest.TestCase):
         self.store.set_dispatching(item.delivery_id)
 
     def _deliver(self, item: Delivery, events: list[str]):
-        """Run the real injector end to end and return its SubmitResult."""
-        return _injector(events).deliver("peer", item.delivery_id, "payload body")
+        """Run the real injector end to end and return its SubmitResult.
+
+        The signature changed in #47: the injector mints through
+        ``MarkerAuthority`` and so needs the ``Delivery`` record rather than a
+        bare id. The assertions below are unchanged — only the call moved.
+        """
+        return _injector(events).deliver(
+            "peer", item, "payload body", ISSUED_AT, EXPIRES_AT
+        )
 
     def test_submitted_crosses_the_seam_and_commits(self) -> None:
         """Red-proof (a). Both bus events observed -> the real injector reports
