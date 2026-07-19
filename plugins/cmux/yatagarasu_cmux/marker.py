@@ -23,6 +23,7 @@ from hashlib import sha256
 from typing import Final
 
 from yatagarasu_core.proofs import DeliveryMarker, MarkerAuthority
+from yatagarasu_core.proofs import MarkerError as CoreMarkerError
 
 _PREFIX: Final = "ygr"
 _NONCE_BYTES: Final = 8
@@ -93,17 +94,26 @@ def extract(key: bytes | None, haystack: str | None) -> DeliveryMarker | None:
     if not haystack:
         return None
 
-    # The actual signature validation uses MarkerAuthority.validate
-    # which requires the payload's Delivery record to be fetched.
-    # The injector module just needs the basic decoding of the wire format.
-    # Therefore, extract() will simply yield ALL decodable markers it finds.
-    # If the payload is completely bogus, we return None.
-
+    # Signature validation lives in MarkerAuthority.validate, which needs the
+    # delivery record; this function only parses the wire format.
+    #
+    # Returns the FIRST decodable marker, not all of them. The comment here used
+    # to say "yield ALL decodable markers it finds" above a `return` in the loop
+    # body — a description of a generator, over code that is not one.
     for match in _YGR1_RE.finditer(haystack):
         try:
             return MarkerAuthority.decode(match.group(1))
-        except Exception:
-            pass
+        except CoreMarkerError:
+            # CoreMarkerError, not this module's MarkerError. They are unrelated
+            # classes — `issubclass(core.MarkerError, marker.MarkerError)` is
+            # False — so catching the local one here would catch nothing and let
+            # decode errors escape. Narrowing to the wrong exception is a guard
+            # that looks tighter and is simply absent.
+            #
+            # Narrow on purpose either way: `except Exception` swallows our own
+            # bugs, so a TypeError in decode would read as "no marker present"
+            # and the delivery would look like it was never marked.
+            continue
 
     return None
 
