@@ -1,0 +1,78 @@
+"""Explicit next-turn submission profiles for supported agent harnesses.
+
+The same terminal input has materially different busy-turn semantics:
+
+* Claude Code queues plain input submitted with Enter.
+* Codex treats Enter as a steer and Tab as the explicit next-turn queue action.
+* Hermes defaults plain Enter to interrupt, while ``/queue`` is the stable
+  non-interrupting next-turn command.
+
+Yatagarasu selects a profile from the authoritative session binding.  It never
+infers a harness or its busy state from terminal contents.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import StrEnum
+
+
+class HarnessKind(StrEnum):
+    """Harness identity recorded by the authoritative session binding."""
+
+    CLAUDE_CODE = "claude-code"
+    CODEX = "codex"
+    HERMES = "hermes"
+
+
+class BusyEnterBehavior(StrEnum):
+    """What plain Enter means while the selected harness is working."""
+
+    QUEUE = "queue"
+    STEER = "steer"
+    INTERRUPT = "interrupt"
+
+
+@dataclass(frozen=True, slots=True)
+class HarnessProfile:
+    """The exact text/key pair that requests a non-interrupting next turn."""
+
+    kind: HarnessKind
+    submit_key: str
+    busy_enter_behavior: BusyEnterBehavior
+    text_prefix: str = ""
+
+    def render(self, envelope: str) -> str:
+        """Render one signed envelope without inspecting runtime UI state."""
+        if not envelope:
+            raise ValueError("cannot submit an empty envelope")
+        return f"{self.text_prefix}{envelope}"
+
+
+_PROFILES = {
+    HarnessKind.CLAUDE_CODE: HarnessProfile(
+        kind=HarnessKind.CLAUDE_CODE,
+        submit_key="enter",
+        busy_enter_behavior=BusyEnterBehavior.QUEUE,
+    ),
+    HarnessKind.CODEX: HarnessProfile(
+        kind=HarnessKind.CODEX,
+        submit_key="tab",
+        busy_enter_behavior=BusyEnterBehavior.STEER,
+    ),
+    HarnessKind.HERMES: HarnessProfile(
+        kind=HarnessKind.HERMES,
+        submit_key="enter",
+        busy_enter_behavior=BusyEnterBehavior.INTERRUPT,
+        text_prefix="/queue ",
+    ),
+}
+
+
+def profile_for(kind: HarnessKind | str) -> HarnessProfile:
+    """Return the declared profile or reject an unsupported harness."""
+    try:
+        resolved = HarnessKind(kind)
+    except ValueError as exc:
+        raise ValueError(f"unsupported harness: {kind!r}") from exc
+    return _PROFILES[resolved]

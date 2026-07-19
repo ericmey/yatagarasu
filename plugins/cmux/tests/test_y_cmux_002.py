@@ -41,6 +41,7 @@ from collections.abc import Iterable
 from yatagarasu_cmux import (
     EVENT_INPUT_SENT,
     EVENT_PROMPT_SUBMITTED,
+    HarnessKind,
     Injector,
     SubmitOutcome,
     extract,
@@ -61,13 +62,13 @@ class _Resolver:
 class _Transport:
     def __init__(self) -> None:
         self.sent: list[tuple[str, str]] = []
-        self.submitted: list[str] = []
+        self.submitted: list[tuple[str, str]] = []
 
     def send_text(self, surface: str, text: str) -> None:
         self.sent.append((surface, text))
 
-    def submit(self, surface: str) -> None:
-        self.submitted.append(surface)
+    def submit(self, surface: str, key: str) -> None:
+        self.submitted.append((surface, key))
 
 
 class _Observer:
@@ -99,12 +100,24 @@ def _build_injector(events: list[str], transport: _Transport | None = None) -> I
     )
 
 
-def _deliver(inj: Injector, identity: str, delivery_id: str, body: str):
+def _deliver(
+    inj: Injector,
+    identity: str,
+    delivery_id: str,
+    body: str,
+    *,
+    harness: HarnessKind | str = HarnessKind.CLAUDE_CODE,
+):
     delivery = Delivery(
         "ev", delivery_id, "attempt", "b-1", identity, DeliveryMode.SESSION_BOUND
     )
     return inj.deliver(
-        identity, delivery, body, "2026-07-19T20:00:00Z", "2026-07-19T20:05:00Z"
+        identity,
+        delivery,
+        body,
+        "2026-07-19T20:00:00Z",
+        "2026-07-19T20:05:00Z",
+        harness=harness,
     )
 
 
