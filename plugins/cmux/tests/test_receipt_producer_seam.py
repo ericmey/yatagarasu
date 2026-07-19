@@ -368,7 +368,9 @@ def test_literal_duplicate_capture_is_normalized_before_emission(delivery) -> No
     observed: list[tuple[str, int]] = []
 
     class RecordingEmitter:
-        def observe(self, source_event, payload=None, *, observed_at):
+        def observe(
+            self, source_event, payload=None, *, observed_at, workspace_id=None
+        ):
             observed.append((source_event.event_name, source_event.seq))
 
     producer = DerivedEventReceiptProducer(
@@ -445,6 +447,63 @@ def test_literal_duplicate_capture_emits_one_valid_receipt(tmp_path, delivery) -
             observed_at=receipt.observed_at,
         )
         is None
+    )
+
+
+def test_literal_duplicate_capture_preserves_broken_signature(
+    tmp_path, delivery
+) -> None:
+    """Normalization must never replace observed marker evidence from core."""
+    authority = MarkerAuthority(REAL_KEY)
+    attacker = MarkerAuthority(ATTACKER_KEY)
+    authoritative = authority.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
+    forged = attacker.mint(delivery, issued_at=ISSUED_AT, expires_at=EXPIRES_AT)
+    source_events = _captured_duplicate_frames(attacker.encode(forged))
+    socket_path = short_socket_path(tmp_path, "literal-forged-capture")
+    config = RuntimeConfig(
+        socket_path=socket_path,
+        state_dir=tmp_path / "literal-forged-state",
+        password=None,
+        source_instance_id=SOURCE_INSTANCE,
+    )
+    config.state_dir.mkdir()
+    emitted = []
+    supervisor = Supervisor.with_receipts(
+        config,
+        core_client=emitted.append,
+        provider_id=PROVIDER_ID,
+        delivery_lookup=lambda delivery_id: (
+            (delivery, authoritative) if delivery_id == delivery.delivery_id else None
+        ),
+    )
+    frames = [
+        ack(
+            "boot-live-dup",
+            replay_count=0,
+            gap=False,
+            requested_after_seq=None,
+            latest_seq=25608,
+        ),
+        *source_events,
+    ]
+
+    with CmuxSocketHarness(socket_path, [frames]):
+        supervisor.run_once()
+
+    assert len(emitted) == 1
+    receipt = emitted[0]
+    assert receipt.proof is not None
+    assert receipt.proof.source_events[1].marker_signature == forged.signature
+    assert (
+        validate_session_proof(
+            proof=receipt.proof,
+            delivery=delivery,
+            evidence_class=receipt.evidence_class,
+            registration=_registration(),
+            marker_authority=authority,
+            observed_at=receipt.observed_at,
+        )
+        == "prompt_marker_binding_mismatch"
     )
 
 
