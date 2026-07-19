@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
+from yatagarasu_core.proofs import MarkerAuthority
+
 from .event_outbox import DerivedEvent
 from .marker import extract
 
@@ -156,9 +158,10 @@ class EventProjector:
             }
             preview = payload.get("message_preview")
             if isinstance(preview, str):
-                marker = extract(self.marker_key, preview)
+                marker = extract(None, preview)
                 if marker is not None:
-                    safe_payload["delivery_marker"] = marker.text
+                    # In core format, the encoded payload is stored back into message_preview
+                    safe_payload["message_preview"] = MarkerAuthority.encode(marker)
 
         projected = {
             "boot_id": boot_id,
