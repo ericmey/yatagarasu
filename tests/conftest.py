@@ -88,9 +88,11 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         type=int,
         default=default_floor,
         help=(
-            "Maximum number of pytest.skip() invocations permitted in a "
-            "test run. Default tracks the count of honestly-tracked "
-            "skips (see _DEFAULT_FLOOR above); raise only with documented "
+            "EXACT number of skipped tests expected in a run — not a maximum. "
+            "The run fails if the count diverges in either direction, so "
+            "closing a skip without lowering the floor is caught in the run "
+            "that closes it. Default tracks the honestly-tracked skips (see "
+            "_DEFAULT_FLOOR above); change it only with documented "
             "justification."
         ),
     )
@@ -105,7 +107,10 @@ def pytest_sessionfinish(
     session: pytest.Session,
     exitstatus: pytest.ExitCode,
 ) -> None:
-    """Count skips and fail the session if they exceed the floor.
+    """Count skips and fail the session if they DIVERGE from the floor.
+
+    Not "exceed". The floor is an exact expected count, in both directions —
+    see the `!=` below and the rationale beside it.
 
     Hooking into pytest_sessionfinish (which runs before
     pytest_terminal_summary) is what converts the floor from a
@@ -125,7 +130,17 @@ def pytest_sessionfinish(
     # (A previous revision stashed on `session` instead of `terminalreporter`
     # and pytest_terminal_summary never read them — the dead-cache bug.)
     rep._yatagarasu_skip_counts = (skipped, xfailed, xpassed, floor)
-    if skipped != floor:
+    if skipped != floor and exitstatus in {
+        pytest.ExitCode.OK,
+        pytest.ExitCode.TESTS_FAILED,
+    }:
+        # Only override an ordinary pass/fail. Copilot caught the first draft
+        # overwriting unconditionally, which would report INTERRUPTED,
+        # INTERNAL_ERROR, USAGE_ERROR or NO_TESTS_COLLECTED as a skip-floor
+        # failure — a crashed or mis-invoked run wearing the wrong cause of
+        # death. A gate that misreports WHY the run failed is a gate you learn
+        # to distrust, which is worse than not having it.
+        #
         # Setting exitstatus here is what fails the CI check job.
         # The terminal summary hook below prints the human-readable
         # message that explains why.
@@ -181,13 +196,26 @@ def pytest_terminal_summary(
             red=True,
         )
     elif skipped < floor:
+        # Name the right remediation for where the floor actually came from.
+        # Telling someone to edit _DEFAULT_FLOOR when their floor arrived via
+        # --skip-floor or the env var sends them to edit a value the run is not
+        # reading — an instruction that cannot work is its own small alibi.
+        overridden = (
+            config.getoption("--skip-floor") != _DEFAULT_FLOOR
+            or os.environ.get(_SKIP_FLOOR_ENV) is not None
+        )
+        remedy = (
+            f"the floor is overridden (--skip-floor / {_SKIP_FLOOR_ENV}); "
+            f"adjust or unset that override"
+            if overridden
+            else f"lower _DEFAULT_FLOOR to {skipped} in tests/conftest.py and "
+            f"delete the closed skip's line from the tracked list above it"
+        )
         terminalreporter.write_line(
             f"FAIL: {skipped} skips are BELOW the floor of {floor}. "
             f"You closed a skip — well done — and the floor did not move with "
-            f"it. Lower _DEFAULT_FLOOR to {skipped} in tests/conftest.py and "
-            f"delete the closed skip's line from the tracked list above it. "
-            f"Until you do, the floor still permits a regression back to "
-            f"{floor} skips, which would pass silently.",
+            f"it. To fix: {remedy}. Until then the floor still permits a "
+            f"regression back to {floor} skips, which would pass silently.",
             red=True,
         )
 
