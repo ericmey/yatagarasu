@@ -5,20 +5,32 @@ were fully green and nothing ran across it. ``SubmitResult`` was asserted on by
 cmux tests; ``Receipt`` was built by hand in core tests, with explicit fields,
 bypassing the injector entirely. Two green suites that never touch.
 
-So the rule for everything below: **it must run the real ``ReceiptReducer``
-against a real ``CoreStore``.** A test that asserts on the shape of the returned
-``Receipt`` would be the same mistake one layer up — it would pass just as
-happily against a receipt the reducer rejects.
+So the rule for everything below, per Tama's acceptance criterion on #50: the
+test drives the **real** ``Injector.deliver`` to produce the ``SubmitResult``,
+and feeds the translation through the **real** ``ReceiptReducer`` against a
+**real** ``CoreStore``. Nothing hand-builds a ``SubmitResult`` and nothing
+hand-builds a ``Receipt``.
+
+The first draft of this file did hand-build the ``SubmitResult``. That met the
+letter of "cross-module" while substituting a fixture for the producer — which
+is the same failure the audit found, one layer up. Tama caught it.
 """
 
 from __future__ import annotations
 
 import tempfile
 import unittest
+from collections.abc import Iterable
 from dataclasses import replace
 from pathlib import Path
 
-from yatagarasu_cmux.outcome import SubmitOutcome, SubmitResult
+from yatagarasu_cmux import (
+    EVENT_INPUT_SENT,
+    EVENT_PROMPT_SUBMITTED,
+    Injector,
+    Marker,
+    SubmitOutcome,
+)
 from yatagarasu_cmux.receipt_translation import PROOF_METHOD, submit_ack_receipt
 
 from yatagarasu_core import (
@@ -34,6 +46,55 @@ from yatagarasu_core import (
 
 NOW = "2026-07-19T14:00:00Z"
 PROVIDER_ID = "cmux-transport-test"
+SIGNING_KEY = b"seam-test-signing-key"
+
+
+class _Resolver:
+    def resolve(self, identity: str) -> str:
+        return "surface:seam"
+
+
+class _Transport:
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str]] = []
+        self.submitted: list[str] = []
+
+    def send_text(self, surface: str, text: str) -> None:
+        self.sent.append((surface, text))
+
+    def submit(self, surface: str) -> None:
+        self.submitted.append(surface)
+
+
+class _Observer:
+    """Scripted bus, exactly as the injector's own acceptance tests use.
+
+    Which events it yields is what selects the outcome, so these three scripts
+    are the whole reason this file can test all three branches through the real
+    producer rather than by constructing the answer:
+
+    - both events      -> SUBMITTED
+    - input_sent only  -> UNKNOWN   (busy pane: something happened, we did not
+                                     see the submit)
+    - nothing          -> NOT_SUBMITTED (clean negative)
+    """
+
+    def __init__(self, events: list[str]) -> None:
+        self._events = list(events)
+
+    def observe(self, marker: Marker, timeout_s: float) -> Iterable[str]:
+        while self._events:
+            yield self._events.pop(0)
+
+
+def _injector(events: list[str]) -> Injector:
+    return Injector(
+        resolver=_Resolver(),
+        transport=_Transport(),
+        observer=_Observer(events),
+        signing_key=SIGNING_KEY,
+        submit_timeout_s=0.05,
+    )
 
 
 def _delivery(suffix: str = "1") -> Delivery:
@@ -67,16 +128,23 @@ class SubmitToReceiptSeam(unittest.TestCase):
         self.store.add_delivery(item)
         self.store.set_dispatching(item.delivery_id)
 
-    def test_a_proven_submit_is_accepted_by_the_real_reducer(self) -> None:
-        """The assertion the audit found missing: not that a Receipt was built,
-        but that the reducer ACCEPTS it and moves the delivery."""
+    def _deliver(self, item: Delivery, events: list[str]):
+        """Run the real injector end to end and return its SubmitResult."""
+        return _injector(events).deliver("peer", item.delivery_id, "payload body")
+
+    def test_submitted_crosses_the_seam_and_commits(self) -> None:
+        """Red-proof (a). Both bus events observed -> the real injector reports
+        SUBMITTED -> the real reducer ACCEPTS and advances the delivery.
+
+        The load-bearing assertion is the reducer's verdict, not the receipt's
+        shape: a shape check passes just as happily against a receipt the
+        reducer rejects."""
         item = _delivery()
         self._dispatching(item)
-        result = SubmitResult(
-            outcome=SubmitOutcome.SUBMITTED,
-            delivery_id=item.delivery_id,
-            source_events=("surface.input_sent", "workspace.prompt.submitted"),
-        )
+
+        result = self._deliver(item, [EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED])
+        self.assertIs(result.outcome, SubmitOutcome.SUBMITTED)
+        self.assertTrue(result.source_events, "producer must carry its evidence")
 
         receipt = submit_ack_receipt(
             result,
@@ -91,16 +159,22 @@ class SubmitToReceiptSeam(unittest.TestCase):
         self.assertEqual(outcome.status, "accepted", outcome.reason)
         self.assertEqual(outcome.state, DeliveryState.TRANSPORT_SUBMITTED)
 
-    def test_an_unknown_outcome_produces_no_receipt(self) -> None:
-        """The load-bearing negative. UNKNOWN means the send may have landed and
-        we did not see it. Emitting a submit ack here would advance the delivery
-        out of dispatching on a guess — asserting evidence we never observed."""
+    def test_unknown_holds_the_delivery_in_dispatching(self) -> None:
+        """Red-proof (c), and the busy-pane regression case.
+
+        Only ``input_sent`` observed: the injector reports UNKNOWN — something
+        happened and we did not see the submit. No receipt is emitted, and the
+        proof that this is *hold* rather than *clean negative* is that the
+        delivery is still in ``dispatching`` afterwards, so nothing downstream
+        may requeue it. Emitting a submit ack here would advance the delivery on
+        a guess."""
         item = _delivery()
-        result = SubmitResult(
-            outcome=SubmitOutcome.UNKNOWN,
-            delivery_id=item.delivery_id,
-            detail="socket closed before ack",
-        )
+        self._dispatching(item)
+
+        result = self._deliver(item, [EVENT_INPUT_SENT])
+        self.assertIs(result.outcome, SubmitOutcome.UNKNOWN)
+        self.assertTrue(result.must_hold)
+        self.assertFalse(result.may_requeue)
 
         self.assertIsNone(
             submit_ack_receipt(
@@ -111,16 +185,20 @@ class SubmitToReceiptSeam(unittest.TestCase):
                 receipt_id="rec-unknown",
             )
         )
+        stored = self.store.get_delivery(item.delivery_id)
+        assert stored is not None
+        self.assertIs(stored.state, DeliveryState.DISPATCHING)
 
-    def test_a_clean_negative_produces_no_receipt(self) -> None:
-        """NOT_SUBMITTED is proven not-landed and safe to requeue. The delivery
-        staying in dispatching IS the record; a receipt would contradict it."""
+    def test_a_clean_negative_leaves_the_delivery_requeueable(self) -> None:
+        """Red-proof (b). No bus events at all -> NOT_SUBMITTED, a proven
+        negative. No receipt: the delivery staying in ``dispatching`` IS the
+        record, and unlike UNKNOWN it is safe to requeue."""
         item = _delivery()
-        result = SubmitResult(
-            outcome=SubmitOutcome.NOT_SUBMITTED,
-            delivery_id=item.delivery_id,
-            detail="target surface not found",
-        )
+        self._dispatching(item)
+
+        result = self._deliver(item, [])
+        self.assertIs(result.outcome, SubmitOutcome.NOT_SUBMITTED)
+        self.assertTrue(result.may_requeue)
 
         self.assertIsNone(
             submit_ack_receipt(
@@ -131,13 +209,15 @@ class SubmitToReceiptSeam(unittest.TestCase):
                 receipt_id="rec-negative",
             )
         )
+        stored = self.store.get_delivery(item.delivery_id)
+        assert stored is not None
+        self.assertIs(stored.state, DeliveryState.DISPATCHING)
 
     def test_mismatched_delivery_ids_raise_rather_than_correlate(self) -> None:
         """Attributing one delivery's evidence to another is the failure the
         whole receipt model exists to prevent. It must be loud, not silent."""
-        result = SubmitResult(
-            outcome=SubmitOutcome.SUBMITTED, delivery_id="delivery-OTHER"
-        )
+        other = _delivery("OTHER")
+        result = self._deliver(other, [EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED])
 
         with self.assertRaisesRegex(ValueError, "attribute one delivery"):
             submit_ack_receipt(
@@ -158,7 +238,7 @@ class SubmitToReceiptSeam(unittest.TestCase):
         item = _delivery("2")
         self._dispatching(item)
         receipt = submit_ack_receipt(
-            SubmitResult(SubmitOutcome.SUBMITTED, item.delivery_id),
+            self._deliver(item, [EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED]),
             item,
             evidence_provider_id=PROVIDER_ID,
             observed_at=NOW,
@@ -178,7 +258,7 @@ class SubmitToReceiptSeam(unittest.TestCase):
         would be rejected downstream for a reason unrelated to the send."""
         item = _delivery("3")
         receipt = submit_ack_receipt(
-            SubmitResult(SubmitOutcome.SUBMITTED, item.delivery_id),
+            self._deliver(item, [EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED]),
             item,
             evidence_provider_id=PROVIDER_ID,
             observed_at=NOW,
