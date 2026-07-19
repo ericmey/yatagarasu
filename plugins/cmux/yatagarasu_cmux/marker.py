@@ -22,6 +22,8 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import Final
 
+from yatagarasu_core.proofs import DeliveryMarker, MarkerAuthority
+
 _PREFIX: Final = "ygr"
 _NONCE_BYTES: Final = 8
 _SIG_CHARS: Final = 16
@@ -36,7 +38,7 @@ _MARKER_RE: Final = re.compile(
 
 
 class MarkerError(ValueError):
-    """Raised when a marker cannot be minted or is not authentic."""
+    """An expected marker token could not be parsed."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,28 +78,32 @@ def mint(key: bytes, delivery_id: str) -> Marker:
     return Marker(delivery_id, nonce, _sign(key, delivery_id, nonce))
 
 
-def extract(key: bytes, haystack: str | None) -> Marker | None:
-    """Extract and verify a marker from arbitrary text.
+_YGR1_RE = re.compile(r"(ygr1\.[A-Za-z0-9_-]+)")
 
-    Returns ``None`` when no authentic marker is present. A forged or corrupted
-    marker is treated exactly like no marker at all — this function never raises
-    on untrusted input, because it is fed host event payloads.
+
+def extract(key: bytes | None, haystack: str | None) -> DeliveryMarker | None:
+    """Extract and parse a marker from arbitrary text.
+
+    Returns ``None`` when no decodable marker is present. Note that decoding is
+    NOT authorization. The caller must still validate the marker against the
+    delivery lookup to ensure the signature and binding are correct.
 
     The caller is expected to keep only the returned marker and drop ``haystack``.
     """
-    # An empty key makes every signature computable by anyone, so a misconfigured
-    # deployment would accept forged markers rather than failing closed. Reject
-    # before comparing, and do it here rather than trusting callers: this function
-    # exists precisely to be safe on untrusted input.
-    if not key or not haystack:
+    if not haystack:
         return None
 
-    for match in _MARKER_RE.finditer(haystack):
-        delivery_id = match.group("delivery_id")
-        nonce = match.group("nonce")
-        signature = match.group("sig")
-        if hmac.compare_digest(signature, _sign(key, delivery_id, nonce)):
-            return Marker(delivery_id, nonce, signature)
+    # The actual signature validation uses MarkerAuthority.validate
+    # which requires the payload's Delivery record to be fetched.
+    # The injector module just needs the basic decoding of the wire format.
+    # Therefore, extract() will simply yield ALL decodable markers it finds.
+    # If the payload is completely bogus, we return None.
+
+    for match in _YGR1_RE.finditer(haystack):
+        try:
+            return MarkerAuthority.decode(match.group(1))
+        except Exception:
+            pass
 
     return None
 

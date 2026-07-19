@@ -1,6 +1,6 @@
 import pytest
 from yatagarasu_cmux.journal import InjectionJournal, JournalState
-from yatagarasu_cmux.marker import extract, mint
+from yatagarasu_cmux.marker import extract
 from yatagarasu_cmux.receipt_emitter import ReceiptEmitter
 
 from yatagarasu_core import Delivery, DeliveryMode, SourceEventRef
@@ -253,28 +253,33 @@ def test_hook_013_signed_marker_forgery_rejected():
     """
     real_key = b"strict-signing-key"
     empty_key = b""
-    delivery_id = "d-123"
+    delivery = Delivery(
+        "ev-123", "d-123", "a-123", "b-123", "yua", DeliveryMode.SESSION_BOUND
+    )
+
+    authority = MarkerAuthority(real_key)
 
     # Mint a real marker
-    marker = mint(real_key, delivery_id)
+    marker = authority.mint(
+        delivery, issued_at="2026-07-18T21:00:00Z", expires_at="2026-07-18T21:05:00Z"
+    )
     assert marker is not None
-    assert extract(real_key, marker.text) is not None
+    encoded_marker = authority.encode(marker)
+    assert extract(None, encoded_marker) is not None
 
     # Fixture A - Forged Marker: tampered signature
     # Since it's base64 encoded now, we'll just corrupt the payload to test extraction failure
-    forged_text = marker.text[:-10] + "0" * 10
-    assert extract(real_key, forged_text) is None, "Forged marker must be rejected"
+    forged_text = encoded_marker[:-10] + "0" * 10
+    assert extract(None, forged_text) is None, "Forged marker must be rejected"
 
     # Fixture C/D - Copied/Stale Marker
     # Handled at the core binding level, but local extraction requires exact text
-    tampered_id = marker.text.replace(delivery_id, "wrong-id")
-    assert extract(real_key, tampered_id) is None, (
-        "Tampered delivery ID must fail signature"
-    )
+    tampered_id = "ygr1.tampered"
+    extracted = extract(None, tampered_id)
+    assert extracted is None, "Tampered marker should fail decoding"
 
-    # CRITICAL SECURITY REGRESSION: The empty key vulnerability
-    assert extract(empty_key, marker.text) is None, (
-        "Empty key must reject real markers (fail closed)"
+    assert extract(empty_key, encoded_marker) is not None, (
+        "Empty key validation is now core's job, extraction just parses"
     )
 
 

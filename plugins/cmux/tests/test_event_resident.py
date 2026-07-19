@@ -16,8 +16,10 @@ from yatagarasu_cmux import (
     SnapshotBaseline,
     StreamProtocolError,
     UnixCmuxSocketClient,
-    mint,
 )
+
+from yatagarasu_core import Delivery, DeliveryMode
+from yatagarasu_core.proofs import MarkerAuthority
 
 from .socket_harness import (
     CmuxSocketHarness,
@@ -283,8 +285,22 @@ def test_one_hundred_reconnects_resume_without_reinjecting_or_skipping(
 
 def test_sensitive_prompt_preview_is_not_persisted(tmp_path) -> None:
     socket_path = short_socket_path(tmp_path, "private")
-    marker = mint(KEY, "delivery-private")
-    secret = f"{marker.text} private words that must never reach the outbox"
+
+    authority = MarkerAuthority(KEY)
+    delivery = Delivery(
+        "ev-private",
+        "delivery-private",
+        "a-1",
+        "b-1",
+        "yua",
+        DeliveryMode.SESSION_BOUND,
+    )
+    marker = authority.mint(
+        delivery, issued_at="2026-07-18T21:00:00Z", expires_at="2026-07-18T21:05:00Z"
+    )
+    marker_text = authority.encode(marker)
+
+    secret = f"{marker_text} private words that must never reach the outbox"
     scripts = [
         [
             ack(
@@ -317,7 +333,7 @@ def test_sensitive_prompt_preview_is_not_persisted(tmp_path) -> None:
         stored = outbox.outbox_rows(SOURCE)[0]["event_json"]
 
     assert "private words" not in stored
-    assert marker.text in stored
+    assert marker_text in stored
     assert '"message_length"' in stored
 
 
