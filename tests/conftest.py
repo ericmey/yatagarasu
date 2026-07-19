@@ -28,24 +28,28 @@ import sys
 import pytest
 
 _SKIP_FLOOR_ENV = "YATAGARASU_SKIP_FLOOR"
-# Default floor tracks the count of HONESTLY skipped hooks with
-# tracked issues. As of 2026-07-19 the suite has 4 such skips, each
-# referencing an open issue in the path-to-completion plan (#37):
-#   Y-CMUX-007 -> #23  Y-CMUX-010 -> #26
-#   Y-CMUX-012 -> #28  Y-CMUX-014 -> #29
-# (Y-CMUX-008 -> #24 landed in PR #39, floor 7 -> 6. Y-CMUX-009 -> #25
-# landed in PR #40, floor 6 -> 5. Y-CMUX-006 -> #22 began passing in
-# PR #44 but the floor was NOT lowered with it; caught 2026-07-19 and
-# dropped 5 -> 4. A ratchet that is only ever tightened by hand is not
-# a ratchet — a regression from 4 skips back to 5 would have passed
-# silently for as long as the floor stayed stale.)
-# Raising the floor requires either:
-#   1. A new tracked skip (add a line above with its issue ref), OR
-#   2. Resolving an existing issue and converting the skip to a pass
-#      (lower the floor by one and remove the line).
-# An UNTRACKED skip is exactly the failure mode this conftest is
-# built to detect; see the "a skip beats a lie" rule in issue #37.
-_DEFAULT_FLOOR = 4
+# Default floor is the EXACT count of honestly-skipped hooks with tracked
+# issues — not a ceiling. As of 2026-07-19 there are 3, each referencing an
+# open issue in the path-to-completion plan (#37):
+#   Y-CMUX-010 -> #26  Y-CMUX-012 -> #28  Y-CMUX-014 -> #29
+#
+# History, kept because it is the argument for the `!=` check below:
+#   Y-CMUX-008 -> #24 landed in PR #39, floor 7 -> 6.
+#   Y-CMUX-009 -> #25 landed in PR #40, floor 6 -> 5.
+#   Y-CMUX-006 -> #22 began passing in PR #44; floor NOT lowered. Caught by
+#     hand 2026-07-19, dropped 5 -> 4.
+#   Y-CMUX-007 -> #23 began passing in PR #54 hours later; floor NOT lowered
+#     again. That second miss is why this stopped being a convention: the
+#     enforcement now fails on ANY divergence, so closing a skip without
+#     moving the floor is caught in the run that closes it.
+#
+# Changing the floor requires either:
+#   1. A new tracked skip (add its issue ref to the list above), OR
+#   2. Closing a skip (delete its line above and lower the number below).
+# Both directions are enforced. An UNTRACKED skip is the failure mode this
+# conftest was built to detect; a STALE floor is the one it kept missing.
+# See the "a skip beats a lie" rule in issue #37.
+_DEFAULT_FLOOR = 3
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -121,10 +125,25 @@ def pytest_sessionfinish(
     # (A previous revision stashed on `session` instead of `terminalreporter`
     # and pytest_terminal_summary never read them — the dead-cache bug.)
     rep._yatagarasu_skip_counts = (skipped, xfailed, xpassed, floor)
-    if skipped > floor:
+    if skipped != floor:
         # Setting exitstatus here is what fails the CI check job.
         # The terminal summary hook below prints the human-readable
         # message that explains why.
+        #
+        # `!=` rather than `>`, changed 2026-07-19 after the floor went stale
+        # TWICE IN ONE MORNING. Y-CMUX-006 began passing in PR #44 and the floor
+        # stayed at 5; that was caught by hand and dropped to 4. Hours later
+        # PR #54 took the count to 3 and the floor stayed at 4 again.
+        #
+        # Under `>`, closing a skip is silent: the count falls below the floor,
+        # nothing complains, and the floor now permits a regression back to the
+        # old number. A ratchet that only ever tightens when somebody remembers
+        # to tighten it is not a ratchet — it is a comment.
+        #
+        # Under `!=`, the gate fails the moment the counts diverge in EITHER
+        # direction, so the person who closed the skip is the person told to
+        # lower the floor, in the run where they closed it. That is the whole
+        # difference between a convention and a mechanism.
         session.exitstatus = pytest.ExitCode.TESTS_FAILED
 
 
@@ -159,6 +178,16 @@ def pytest_terminal_summary(
             f"Either remove the skips or raise the floor with documented "
             f"justification. This is the suite-scope partial-evidence "
             f"rule from CONTRIBUTING.md.",
+            red=True,
+        )
+    elif skipped < floor:
+        terminalreporter.write_line(
+            f"FAIL: {skipped} skips are BELOW the floor of {floor}. "
+            f"You closed a skip — well done — and the floor did not move with "
+            f"it. Lower _DEFAULT_FLOOR to {skipped} in tests/conftest.py and "
+            f"delete the closed skip's line from the tracked list above it. "
+            f"Until you do, the floor still permits a regression back to "
+            f"{floor} skips, which would pass silently.",
             red=True,
         )
 
