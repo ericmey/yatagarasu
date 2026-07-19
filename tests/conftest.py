@@ -84,10 +84,16 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         type=int,
         default=default_floor,
         help=(
-            "Maximum number of pytest.skip() invocations permitted in a "
-            "test run. Default tracks the count of honestly-tracked "
-            "skips (see _DEFAULT_FLOOR above); raise only with documented "
-            "justification."
+            "Maximum number of skip OUTCOMES permitted in a test run, "
+            "counted from the terminal reporter's `stats['skipped']` "
+            "list (one entry per skipped test or subtest). Default "
+            "tracks the count of honestly-tracked skips (see "
+            "_DEFAULT_FLOOR above); raise only with documented "
+            "justification. The implementation counts skip outcomes, "
+            "not pytest.skip() invocations directly — if a single "
+            "test calls skip() twice, only one outcome is recorded "
+            "(pytest's terminal reporter dedupes); the count tracks "
+            "the number of tests/items that ended in skip status."
         ),
     )
 

@@ -319,15 +319,22 @@ def cmux_harness(
     plugin_binary: pathlib.Path,
     plugin_workspace: str,
 ) -> Iterator[Harness]:
-    """Open the harness for a test. Closes on exit.
+    """Yield the harness for a test. Closes on exit.
 
-    The harness connects to the cmux socket, opens the plugin in a
-    private workspace, and starts the events-tail reader. Yield
-    the Harness; the test calls the fixture levers on it.
+    Currently a thin constructor: the harness context manager
+    builds a `Harness` with the supplied paths, yields it for
+    the test, and calls `harness.close()` on exit. The real
+    cmux-side lifecycle (socket connect, plugin process open,
+    events-tail reader thread) is the production event-stream
+    resident at issue #22; this manager exists today so tests
+    can write against the surface contract before the resident
+    lands.
 
-    The test owns the observation capture (harness.capture) and the
-    verdict lines (test docstring). The harness owns the cmux-side
-    lifecycle.
+    Tests should treat the yielded `Harness` as the surface they
+    exercise: knob toggles (e.g. `suppress_composer_submit`) work
+    today; bus-coupled levers (e.g. `inject`) raise
+    `NotImplementedError` with their owning-issue reference until
+    the production code lands.
     """
     harness = Harness(
         cmux_socket_path=cmux_socket_path,
@@ -335,9 +342,6 @@ def cmux_harness(
         plugin_workspace=plugin_workspace,
     )
     try:
-        # connect cmux socket
-        # open plugin process
-        # start events tail reader (background thread)
         yield harness
     finally:
         harness.close()
