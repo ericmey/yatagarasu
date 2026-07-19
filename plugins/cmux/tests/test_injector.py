@@ -236,6 +236,38 @@ def test_injector_applies_explicit_harness_profile(harness, prefix, submit_keys)
     ]
 
 
+def test_codex_waits_for_tab_to_settle_before_enter() -> None:
+    """SEV-1 reopen: back-to-back keys leave an idle prompt unsubmitted."""
+    effects: list[tuple[str, object]] = []
+
+    class TimedTransport(FakeTransport):
+        def send_text(self, surface: str, text: str) -> None:
+            effects.append(("text", surface))
+            super().send_text(surface, text)
+
+        def submit(self, surface: str, key: str) -> None:
+            effects.append(("key", key))
+            super().submit(surface, key)
+
+    injector = Injector(
+        resolver=FakeResolver(["surface:timed"]),
+        transport=TimedTransport(),
+        observer=FakeObserver([EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED]),
+        marker_authority=MarkerAuthority(KEY),
+        sleep=lambda seconds: effects.append(("sleep", seconds)),
+    )
+
+    result = _deliver(injector, "d-timed", harness=HarnessKind.CODEX)
+
+    assert result.outcome is SubmitOutcome.SUBMITTED
+    assert effects == [
+        ("text", "surface:timed"),
+        ("key", "tab"),
+        ("sleep", 0.1),
+        ("key", "enter"),
+    ]
+
+
 def test_unsupported_harness_is_clean_negative_without_terminal_effect():
     transport = FakeTransport()
     inj = Injector(
