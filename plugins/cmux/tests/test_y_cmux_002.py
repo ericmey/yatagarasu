@@ -1,0 +1,198 @@
+"""Y-CMUX-002 — `transport-submitted` requires BOTH events (true negative,
+HOLD-not-requeue on UNKNOWN).
+
+Adversarial tracer. The predecessor to this plugin (legacy `agent-bridge
+verify_submitted`) scraped the composer and assumed submitted on scrape failure,
+silently losing 9+ messages. The native pair `surface.input_sent` +
+`workspace.prompt.submitted` is the true-negative substitute; the bus-observer
+three-outcome contract (SUBMITTED / NOT_SUBMITTED / UNKNOWN) is what makes
+the regression class fail loudly.
+
+This file is the C1 tracer for issue #1; it alone gates build-open. The
+injector at f0cf03c and the marker at marker.py together implement the
+contract this test asserts against.
+
+Adversarial shape: a `_Observer` that yields ONLY `EVENT_INPUT_SENT`
+(simulates a busy pane that accepted the input but did not submit within the
+window). The injector must:
+  - NOT report SUBMITTED (because the second event is missing).
+  - Return UNKNOWN (NOT NOT_SUBMITTED — UNKNOWN means some event was
+    observed; we know an event was observed, namely input_sent).
+  - The pane must NOT have been touched by a follow-up send_text on the
+    `UNKNOWN` path (the duplicate-turn prevention property is the load-bearing
+    test here, even though it is enforced at the journal layer in
+    Y-CMUX-017; this test asserts the trigger that surfaces UNKNOWN).
+
+Reopen condition (SEV-1): plugin reports `transport-submitted = true` while
+`workspace.prompt.submitted` is absent.
+
+Helpers (`_Resolver`, `_Transport`, `_Observer`) are local on purpose:
+importing them from `test_injector.py` would couple tests across files,
+and the team convention (see test_acceptance_006_010.py) is local helpers.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable
+
+from yatagarasu_cmux import (
+    EVENT_INPUT_SENT,
+    EVENT_PROMPT_SUBMITTED,
+    Injector,
+    Marker,
+    SubmitOutcome,
+    extract,
+)
+from yatagarasu_cmux.outcome import SubmitResult
+
+SIGNING_KEY = b"acceptance-only-signing-key"
+
+
+class _Resolver:
+    def resolve(self, identity: str) -> str:
+        return "surface:acceptance"
+
+
+class _Transport:
+    def __init__(self) -> None:
+        self.sent: list[tuple[str, str]] = []
+        self.submitted: list[str] = []
+
+    def send_text(self, surface: str, text: str) -> None:
+        self.sent.append((surface, text))
+
+    def submit(self, surface: str) -> None:
+        self.submitted.append(surface)
+
+
+class _Observer:
+    """Yields a scripted event chain exactly once.
+
+    The list is fully consumed within the timeout window; once empty,
+    the bus has nothing more to deliver and the injector classifies
+    the shortfall.
+    """
+
+    def __init__(self, events: list[str]) -> None:
+        self._events = list(events)
+
+    def observe(self, marker: Marker, timeout_s: float) -> Iterable[str]:
+        yield from self._events
+
+
+def _build_injector(events: list[str], transport: _Transport | None = None) -> Injector:
+    return Injector(
+        resolver=_Resolver(),
+        transport=transport or _Transport(),
+        observer=_Observer(events),
+        signing_key=SIGNING_KEY,
+        submit_timeout_s=0.05,
+    )
+
+
+def test_y_cmux_002_input_sent_without_submit_is_unknown_holds_no_requeue() -> None:
+    """Adversarial fixture: input accepted, submit suppressed.
+
+    The injector must return UNKNOWN (some event was observed, namely
+    `surface.input_sent`; this is the busy-pane-pending case, not the
+    transport-dropped case). UNKNOWN's contract is `must_hold` and
+    `not may_requeue` — the test asserts both.
+    """
+    inj = _build_injector(events=[EVENT_INPUT_SENT])
+
+    result: SubmitResult = inj.deliver("peer", "d-001", "hello world")
+
+    # Tracer contract assertions:
+    assert result.outcome is SubmitOutcome.UNKNOWN, (
+        f"outcome must be UNKNOWN for input-sent-without-submit, got {result.outcome!r}. "
+        f"This is the regression to the lenient-scrape pattern."
+    )
+    assert result.must_hold, "UNKNOWN must_hold invariant broken"
+    assert not result.may_requeue, (
+        "UNKNOWN may_requeue invariant broken — requeue here would race "
+        "the busy-queue admission and create a duplicate turn."
+    )
+    # SEV-1 reopen condition: the predecessor assumed submitted on scrape
+    # failure. The injector must NOT report SUBMITTED in this fixture.
+    assert not result.is_proven, (
+        "is_proven must be False when only input_sent was observed; "
+        "this is the SEV-1 reopen condition."
+    )
+    # The literal event chain must include exactly what the bus saw.
+    assert result.source_events == (EVENT_INPUT_SENT,)
+
+
+def test_y_cmux_002_no_events_at_all_is_clean_negative_may_requeue() -> None:
+    """NOT_SUBMITTED is the safe-to-requeue case (no events at all observed).
+
+    This is the second half of the three-outcome contract: when the input
+    never reached the host, there is no busy-queue admission to race, and
+    requeue is safe. The test asserts the `may_requeue=True` invariant.
+    """
+    inj = _build_injector(events=[])
+
+    result = inj.deliver("peer", "d-002", "hello world")
+
+    assert result.outcome is SubmitOutcome.NOT_SUBMITTED, (
+        f"outcome must be NOT_SUBMITTED when nothing was observed, got {result.outcome!r}."
+    )
+    assert result.may_requeue, (
+        "NOT_SUBMITTED may_requeue invariant broken — the busy-pane case "
+        "is impossible when no events were observed."
+    )
+    assert not result.is_proven
+    assert result.source_events == ()
+
+
+def test_y_cmux_002_both_events_prove_submission() -> None:
+    """The positive control: both events observed → SUBMITTED.
+
+    This is the regression test's negative-control counterpart — if the
+    bus delivers both events, the injector must report SUBMITTED. The
+    tests above prove the negative space; this one proves the positive.
+    Together they bound the three-outcome decision tree.
+    """
+    inj = _build_injector(events=[EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED])
+
+    result = inj.deliver("peer", "d-003", "hello world")
+
+    assert result.outcome is SubmitOutcome.SUBMITTED
+    assert result.is_proven
+    assert not result.must_hold
+    assert not result.may_requeue
+    assert result.source_events == (EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED)
+
+
+def test_y_cmux_002_marker_is_recoverable_from_sent_text_on_unknown() -> None:
+    """On UNKNOWN the marker is still in the sent text and recoverable.
+
+    Y-CMUX-013 says session_id alone is insufficient; the marker is the
+    load-bearing correlation. This test asserts the marker survives the
+    input_sent-only fixture, so the journal layer (Y-CMUX-017) can
+    reconcile the marker against the bus evidence at recovery time.
+    """
+    transport = _Transport()
+    inj = _build_injector(events=[EVENT_INPUT_SENT], transport=transport)
+
+    result = inj.deliver("peer", "d-004", "payload body")
+
+    assert result.outcome is SubmitOutcome.UNKNOWN
+    assert transport.sent, (
+        "the input_sent path must have sent at least one message; "
+        "otherwise the fixture is wrong."
+    )
+    _, sent_text = transport.sent[0]
+    # Extract the actual marker from the sent text (NOT a fresh `mint()` —
+    # mint returns a new nonce/signature each call, so a second mint would
+    # never match the embedded one). The whole point of the marker is that
+    # it's recoverable from the host event payload.
+    recovered = extract(SIGNING_KEY, sent_text)
+    assert recovered is not None, (
+        f"marker must be extractable from sent text {sent_text!r}; "
+        "the journal layer relies on this for crash-window reconciliation."
+    )
+    assert recovered.delivery_id == "d-004", (
+        f"recovered marker must carry the original delivery_id; "
+        f"got {recovered.delivery_id!r}, expected 'd-004'. "
+        "If the marker text does not match the key, the signer is wrong."
+    )
