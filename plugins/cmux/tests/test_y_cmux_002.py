@@ -9,8 +9,11 @@ three-outcome contract (SUBMITTED / NOT_SUBMITTED / UNKNOWN) is what makes
 the regression class fail loudly.
 
 This file is the C1 tracer for issue #1; it alone gates build-open. The
-injector at f0cf03c and the marker at marker.py together implement the
-contract this test asserts against.
+injector (``yatagarasu_cmux.injector.Injector``) and the marker
+(``yatagarasu_cmux.marker.mint`` / ``extract``) implement the contract
+this test asserts against. Citations reference stable symbols, not
+commit SHAs — a SHA citation rots on every squash or rebase, and
+this file has been rebased twice today already.
 
 Adversarial shape: a `_Observer` that yields ONLY `EVENT_INPUT_SENT`
 (simulates a busy pane that accepted the input but did not submit within the

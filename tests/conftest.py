@@ -139,10 +139,15 @@ def pytest_terminal_summary(
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Register a custom marker so the floor is greppable in CI logs."""
-    config.addinivalue_line(
-        "markers",
-        "yatagarasu_skip(reason): mark a test as expected to skip in this "
-        "run with the documented reason. Using this marker without raising "
-        "the floor is a partial-evidence regression.",
-    )
+    """Conftest hook reserved for future marker registration.
+
+    The skip-floor discipline is enforced in pytest_sessionfinish;
+    no custom marker is needed. A custom marker was registered in
+    an earlier revision but was unused — pytest.mark.skip with a
+    documented `reason=` string carries the per-skip rationale that
+    the discipline requires, and the floor tracks the count via the
+    terminalreporter's stats directly. Leaving this hook in place
+    as the natural place to register any future marker should the
+    team want one; today it does nothing, by design.
+    """
+    return None

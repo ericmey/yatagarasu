@@ -7,13 +7,13 @@ The harness owns two surfaces:
 - **cmux socket** — connects to the host-local cmux event bus via the
   events.stream API. Tail-positioned at the most recent heartbeat, retries
   on disconnect, advances on reconnect. Surface IDs and binding tuples
-  surfaced to the test are resolved at event time, never cached.
+  passed to the test are resolved at event time, never cached.
 
 - **plugin under test** — the cmux plugin process is opened in a private
   workspace with a stub binding pointed at a stable fixture identifier
-  (the test's own session, never a real seat). Surface handles the
-  harness surfaces to the test are explicit plugin-side handles, not
-  direct cmux session handles.
+  (the test's own session, never a real seat). The surface handles
+  exposed to the test are explicit plugin-side handles, not direct cmux
+  session handles.
 
 Adversarial hooks pivot on a small set of fixture-knobs — each is a
 boolean or a deterministic injection point. The harness records
@@ -148,11 +148,21 @@ class Harness:
         (signed HMAC over the four-key contract) per attempt, embeds
         it in the injected text, and the host submit event carries
         the marker for exact correlation. session_id alone is
-        insufficient; the marker is what makes
+        session_id alone is insufficient; the marker is what makes
         `BusObserver.observe(marker, timeout_s)` authoritative.
         """
-        # Aoi's injector (#3) drives this. We shape the call.
-        ...
+        # Issue #22 builds the production event-stream resident. Until
+        # then, raise NotImplementedError with the issue reference so
+        # an early caller is told exactly what is missing, rather than
+        # silently getting nothing — which is the vacuous-test failure
+        # mode (something that cannot fail, therefore cannot inform).
+        raise NotImplementedError(
+            "harness.inject() awaits the production event-stream resident "
+            "tracked in issue #22. The harness is the surface contract; "
+            "the resident is the body. Until #22 lands, this is the "
+            "honest signal: not the silent-no-op behavior of an ellipsis, "
+            "but a fail-loud reference to the issue that owns the gap."
+        )
 
     def suppress_composer_submit(self, on: bool = True) -> None:
         """Adversarial pivot: drop the composer-submit leg.
@@ -188,7 +198,12 @@ class Harness:
         Captures the bus event-stream gap. Pairs with the cursor /
         restart tests.
         """
-        ...
+        raise NotImplementedError(
+            "harness.restart_cmux() awaits issue #22 (production event-stream "
+            "resident). The hook contract for cursor / restart tests is "
+            "settled; the harness body that drives it is not. Issue #22 "
+            "owns the gap."
+        )
 
     def restart_seat_session(self, identity: str) -> None:
         """Restart the seat's harness session while the plugin holds
@@ -198,26 +213,41 @@ class Harness:
         the next inject re-resolves by identity and lands in the
         live surface, not in the cached stale ID.
         """
-        ...
+        raise NotImplementedError(
+            "harness.restart_seat_session() awaits issue #22. The Y-CMUX-003 "
+            "hook is settled; the seam-injection code that simulates the "
+            "restart is the missing piece."
+        )
 
     def force_slow_consumer(self, *, seq: int) -> None:
         """Pause the bus reader until ≥1024 events have passed; force
         the `slow_consumer` disconnect. Asserts reconnect from the
         persisted `seq`.
         """
-        ...
+        raise NotImplementedError(
+            "harness.force_slow_consumer() awaits issue #22. Y-CMUX-006 "
+            "is the hook; the slow_consumer fixture that drives it is "
+            "the missing piece."
+        )
 
     def set_focused_surface(self, surface_id: str) -> None:
         """Drive `surface.focused` to the named surface; used to
         set up banner-withdraw and visibility scenarios.
         """
-        ...
+        raise NotImplementedError(
+            "harness.set_focused_surface() awaits issue #23. Y-CMUX-007 "
+            "is the hook; the focus-driver that drives it is the missing piece."
+        )
 
     def two_seats_one_workspace(self) -> tuple[str, str]:
         """Provision two seats A (focused) and B (visible but not
         focused) sharing a workspace. Returns (identity_a, identity_b).
         """
-        ...
+        raise NotImplementedError(
+            "harness.two_seats_one_workspace() awaits issue #22. The "
+            "two-seats-one-workspace fixture is the basis for the "
+            "banner-withdraw hook (Y-CMUX-007) and is the missing piece."
+        )
 
     # -- bus reader ----------------------------------------------------
 
