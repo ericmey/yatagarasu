@@ -30,7 +30,16 @@ from .injector import (
     Resolver,
     Transport,
 )
-from .marker import Marker, MarkerError, extract, mint, redact
+from .marker import (
+    MAX_SHORT_MARKER_CHARS,
+    Marker,
+    MarkerError,
+    ShortMarker,
+    encode_short,
+    extract,
+    mint,
+    redact,
+)
 from .notifications import (
     IN_SESSION_EVIDENCE,
     NotificationLifecycle,
@@ -53,6 +62,7 @@ __all__ = [
     "EVENT_INPUT_SENT",
     "EVENT_PROMPT_SUBMITTED",
     "IN_SESSION_EVIDENCE",
+    "MAX_SHORT_MARKER_CHARS",
     "REQUIRED_EVENTS",
     "SNAPSHOT_METHODS",
     "BusObserver",
@@ -78,6 +88,7 @@ __all__ = [
     "ResidentRun",
     "ResolutionError",
     "Resolver",
+    "ShortMarker",
     "SnapshotBaseline",
     "StreamAck",
     "StreamProtocolError",
@@ -86,6 +97,7 @@ __all__ = [
     "Transport",
     "UnixCmuxSocketClient",
     "default_event_outbox_path",
+    "encode_short",
     "extract",
     "mint",
     "profile_for",

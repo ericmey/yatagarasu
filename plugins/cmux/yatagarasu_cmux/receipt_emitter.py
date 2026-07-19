@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import contextlib
-import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -14,10 +12,9 @@ from yatagarasu_core import (
     SessionProof,
     SourceEventRef,
 )
-from yatagarasu_core.proofs import MarkerAuthority
-from yatagarasu_core.proofs import MarkerError as CoreMarkerError
 
-_YGR1_RE = re.compile(r"(ygr1\.[A-Za-z0-9_-]+)")
+from .marker import ShortMarker, extract
+
 _UNSCOPED_WORKSPACE = "<unscoped>"
 
 
@@ -25,7 +22,7 @@ _UNSCOPED_WORKSPACE = "<unscoped>"
 class _PendingChain:
     input_event: SourceEventRef | None = None
     prompt_event: SourceEventRef | None = None
-    decoded_marker: DeliveryMarker | None = None
+    decoded_marker: DeliveryMarker | ShortMarker | None = None
 
 
 class ReceiptEmitter:
@@ -75,10 +72,7 @@ class ReceiptEmitter:
             pending.prompt_event = event
             pending.decoded_marker = None
             if payload and "message_preview" in payload:
-                match = _YGR1_RE.search(payload["message_preview"])
-                if match:
-                    with contextlib.suppress(CoreMarkerError):
-                        pending.decoded_marker = MarkerAuthority.decode(match.group(1))
+                pending.decoded_marker = extract(payload["message_preview"])
         elif name == "agent.hook.UserPromptSubmit":
             pending = self._pending_chains.pop(workspace_key, None)
             if not event.session_id:

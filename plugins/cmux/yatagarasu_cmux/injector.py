@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import time
 from collections.abc import Callable, Iterable, Sequence
 from typing import Protocol
 
@@ -26,7 +27,7 @@ from yatagarasu_core import Delivery
 from yatagarasu_core.proofs import DeliveryMarker, MarkerAuthority
 
 from .harness_profiles import HarnessKind, profile_for
-from .marker import MarkerError, redact
+from .marker import MarkerError, encode_short, redact
 from .outcome import SubmitOutcome, SubmitResult
 
 log = logging.getLogger(__name__)
@@ -84,6 +85,9 @@ class Injector:
     #: were called after the effect, a crash in between would leave no record and
     #: recovery would read "never injected".
     on_effect_pending: Callable[[str, str], None] | None = None
+    #: The harness may require its first key effect to settle before the next
+    #: key. Injectable so tests assert ordering without sleeping.
+    sleep: Callable[[float], None] = time.sleep
 
     def deliver(
         self,
@@ -118,7 +122,7 @@ class Injector:
         # unknown profile before resolving or touching any terminal surface.
         try:
             profile = profile_for(harness)
-            encoded_marker = self.marker_authority.encode(marker)
+            encoded_marker = encode_short(marker)
             text = profile.render(f"{encoded_marker} {body}")
         except ValueError as exc:
             return SubmitResult(
@@ -151,7 +155,10 @@ class Injector:
 
         try:
             self.transport.send_text(surface, text)
-            self.transport.submit(surface, profile.submit_key)
+            for index, key in enumerate(profile.submit_keys):
+                if index and profile.inter_key_delay_s:
+                    self.sleep(profile.inter_key_delay_s)
+                self.transport.submit(surface, key)
         except Exception as exc:
             # The send may have partially applied. We cannot prove it did not.
             log.warning(

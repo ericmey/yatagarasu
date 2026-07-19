@@ -5,10 +5,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from yatagarasu_core.proofs import MarkerAuthority
-
 from .event_outbox import DerivedEvent
-from .marker import extract
+from .marker import extract, marker_text
 
 PROTOCOL = "cmux-events"
 PROTOCOL_VERSION = 1
@@ -159,8 +157,9 @@ class EventProjector:
             if isinstance(preview, str):
                 marker = extract(preview)
                 if marker is not None:
-                    # In core format, the encoded payload is stored back into message_preview
-                    safe_payload["message_preview"] = MarkerAuthority.encode(marker)
+                    # Persist only the marker token; surrounding prompt content
+                    # never crosses the host-local projection boundary.
+                    safe_payload["message_preview"] = marker_text(marker)
 
         projected = {
             "boot_id": boot_id,

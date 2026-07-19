@@ -211,14 +211,14 @@ def test_marker_is_embedded_and_recoverable():
 
 
 @pytest.mark.parametrize(
-    ("harness", "prefix", "submit_key"),
+    ("harness", "prefix", "submit_keys"),
     [
-        (HarnessKind.CLAUDE_CODE, "ygr1.", "enter"),
-        (HarnessKind.CODEX, "ygr1.", "tab"),
-        (HarnessKind.HERMES, "/queue ygr1.", "enter"),
+        (HarnessKind.CLAUDE_CODE, "ygr1s.", ("enter",)),
+        (HarnessKind.CODEX, "ygr1s.", ("tab", "enter")),
+        (HarnessKind.HERMES, "/queue ygr1s.", ("enter",)),
     ],
 )
-def test_injector_applies_explicit_harness_profile(harness, prefix, submit_key):
+def test_injector_applies_explicit_harness_profile(harness, prefix, submit_keys):
     transport = FakeTransport()
     inj = Injector(
         resolver=FakeResolver(["surface:profile"]),
@@ -231,7 +231,41 @@ def test_injector_applies_explicit_harness_profile(harness, prefix, submit_key):
 
     assert result.outcome is SubmitOutcome.SUBMITTED
     assert transport.sent[0][1].startswith(prefix)
-    assert transport.submitted == [("surface:profile", submit_key)]
+    assert transport.submitted == [
+        ("surface:profile", submit_key) for submit_key in submit_keys
+    ]
+
+
+def test_codex_waits_for_tab_to_settle_before_enter() -> None:
+    """SEV-1 reopen: back-to-back keys leave an idle prompt unsubmitted."""
+    effects: list[tuple[str, object]] = []
+
+    class TimedTransport(FakeTransport):
+        def send_text(self, surface: str, text: str) -> None:
+            effects.append(("text", surface))
+            super().send_text(surface, text)
+
+        def submit(self, surface: str, key: str) -> None:
+            effects.append(("key", key))
+            super().submit(surface, key)
+
+    injector = Injector(
+        resolver=FakeResolver(["surface:timed"]),
+        transport=TimedTransport(),
+        observer=FakeObserver([EVENT_INPUT_SENT, EVENT_PROMPT_SUBMITTED]),
+        marker_authority=MarkerAuthority(KEY),
+        sleep=lambda seconds: effects.append(("sleep", seconds)),
+    )
+
+    result = _deliver(injector, "d-timed", harness=HarnessKind.CODEX)
+
+    assert result.outcome is SubmitOutcome.SUBMITTED
+    assert effects == [
+        ("text", "surface:timed"),
+        ("key", "tab"),
+        ("sleep", 0.1),
+        ("key", "enter"),
+    ]
 
 
 def test_unsupported_harness_is_clean_negative_without_terminal_effect():

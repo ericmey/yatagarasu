@@ -854,7 +854,7 @@ def test_y_cmux_010_incomplete_busy_submit_holds_and_never_requeues() -> None:
         "must_hold": True,
         "may_requeue": False,
         "send_count": 1,
-        "submit_count": 1,
+        "submit_count": 2,
     }
 
 
@@ -872,7 +872,8 @@ def test_y_cmux_010_busy_codex_send_uses_next_turn_action(tmp_path) -> None:
         transport.send_text(
             "00000000-0000-0000-0000-000000000010", profile.render("next turn")
         )
-        transport.submit("00000000-0000-0000-0000-000000000010", profile.submit_key)
+        for key in profile.submit_keys:
+            transport.submit("00000000-0000-0000-0000-000000000010", key)
 
     observations = [
         (request["method"], request["params"]) for request in harness.command_requests
@@ -890,6 +891,13 @@ def test_y_cmux_010_busy_codex_send_uses_next_turn_action(tmp_path) -> None:
             {
                 "surface_id": "00000000-0000-0000-0000-000000000010",
                 "key": "tab",
+            },
+        ),
+        (
+            "surface.send_key",
+            {
+                "surface_id": "00000000-0000-0000-0000-000000000010",
+                "key": "enter",
             },
         ),
     ]
